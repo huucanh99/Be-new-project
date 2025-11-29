@@ -1,10 +1,9 @@
 // routes/alarms.js
 const express = require("express");
 const router = express.Router();
-const { authRequired } = require("../middleware/authMiddleware");
 
 // GET /api/alarms
-router.get("/", authRequired, (req, res) => {
+router.get("/", (req, res) => {
   const alarms = [
     {
       type: "Current Abnormality",

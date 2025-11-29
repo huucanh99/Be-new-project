@@ -1,17 +1,16 @@
 // routes/dashboard.js
 const express = require("express");
 const router = express.Router();
-const { authRequired } = require("../middleware/authMiddleware");
 
 // GET /api/dashboard
-router.get("/", authRequired, (req, res) => {
+router.get("/", (req, res) => {
   // DỮ LIỆU GIẢ DEMO – SAU NÀY LẤY TỪ DB/SENSOR
   const data = {
     batchId: "250930_0100",
 
     // CHỖ NÀY QUYẾT ĐỊNH MÀU:
     // 'operating' | 'standby' | 'abnormal' | 'offline'
-    machineStatus: "operating", // thử abnormal để thấy nút Alert nhấp nháy
+    machineStatus: "abnormal", // thử abnormal để thấy nút Alert nhấp nháy
 
     steelBallWeight: 123.45, // KG
 

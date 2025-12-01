@@ -5,15 +5,48 @@ const path = require("path");
 const dbPath = path.resolve(__dirname, "database.sqlite");
 const db = new sqlite3.Database(dbPath);
 
-// Tạo bảng nếu chưa có
+// ===================== SHIFT FUNCTION =====================
+function getShift(hour) {
+  // Shift 1: 22 → 23 + 0 → 5
+  if (hour >= 22 || hour < 6) return 1;
+
+  // Shift 2: 6 → 13
+  if (hour >= 6 && hour < 14) return 2;
+
+  // Shift 3: 14 → 21
+  return 3;
+}
+
+// ============ CREATE TABLE (full schema with shift) =================
 const createTableQuery = `
 CREATE TABLE IF NOT EXISTS batches (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   batch_code TEXT NOT NULL,
   date TEXT NOT NULL,
   time TEXT NOT NULL,
+  shift INTEGER NOT NULL,
+
+  -- Base
   power_kw REAL,
-  steel_ball_kg REAL
+  steel_ball_kg REAL,
+
+  -- Voltage
+  voltage_ps REAL,
+
+  -- Rotation Speed
+  impeller1_rpm REAL,
+  impeller2_rpm REAL,
+
+  -- Current
+  current_ps REAL,
+  current_impeller1 REAL,
+  current_impeller2 REAL,
+  current_dust REAL,
+
+  -- Power (kW)
+  power_impeller1_kw REAL,
+  power_impeller2_kw REAL,
+  power_dust_kw REAL
 )
 `;
 
@@ -21,14 +54,19 @@ db.run(createTableQuery, (err) => {
   if (err) return console.error("Lỗi tạo bảng:", err);
 });
 
-// Hàm tạo giờ dạng HH:MM
 function formatTime(h, m) {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
-// random int [min, max]
+// random float
 function random(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
+  return Math.random() * (max - min) + min;
+}
+
+// random integer EVEN (số chẵn)
+function randomEven(min, max) {
+  const r = Math.floor(Math.random() * (max - min + 1)) + min; // int
+  return r % 2 === 0 ? r : r + 1 > max ? r - 1 : r + 1; // ép thành số chẵn trong khoảng
 }
 
 db.serialize(() => {
@@ -36,48 +74,85 @@ db.serialize(() => {
   db.run("DELETE FROM batches");
 
   const insertQuery = `
-    INSERT INTO batches (batch_code, date, time, power_kw, steel_ball_kg)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO batches (
+      batch_code, date, time, shift,
+      power_kw, steel_ball_kg,
+      voltage_ps,
+      impeller1_rpm, impeller2_rpm,
+      current_ps, current_impeller1, current_impeller2, current_dust,
+      power_impeller1_kw, power_impeller2_kw, power_dust_kw
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
-  const date = "2025-11-27";
-  const dateCompact = date.replace(/-/g, "").slice(2); // 251127
+  const date = "2025-12-01";
+  const dateCompact = date.replace(/-/g, "").slice(2);
 
-  // Số batch trong ngày: 15–20
-  const totalBatches = random(15, 20);
+  const totalBatches = 15 + Math.floor(Math.random() * 6);
 
   let currentHour = 0;
   let currentMinute = 0;
   let batchIndex = 0;
 
-  console.log(`🚀 Seed cho ngày ${date} với khoảng ${totalBatches} batch`);
+  console.log(`🚀 Seed ${totalBatches} batch`);
 
   while (currentHour < 24 && batchIndex < totalBatches) {
     const batchCode = `B${dateCompact}_${String(batchIndex).padStart(4, "0")}`;
 
-    // Thời lượng 1 batch: 40–120 phút, bội số của 10
-    const durationMinutes = random(4, 12) * 10; // 4*10=40 → 12*10=120
+    const durationMinutes = (4 + Math.floor(Math.random() * 8)) * 10; // 40–120 minutes
     const steps = durationMinutes / 10;
 
-    console.log(
-      `  ▶ Batch ${batchCode} | start ${formatTime(
-        currentHour,
-        currentMinute
-      )} | steps=${steps}`
-    );
+    console.log(`▶ Batch ${batchCode} | steps=${steps}`);
 
     for (let s = 0; s < steps; s++) {
       if (currentHour >= 24) break;
 
       const time = formatTime(currentHour, currentMinute);
-      const power = random(20, 35);
-      const steel = random(20, 35); // hoặc power * 0.8 nếu muốn mềm hơn
+      const shift = getShift(currentHour);
 
-      db.run(insertQuery, [batchCode, date, time, power, steel], (err) => {
-        if (err) console.error("Insert error:", err);
-      });
+      // ====== CHỈNH Ở ĐÂY: power & steel = số chẵn ======
+      const power_kw = randomEven(20, 34);        // 20,22,...,34
+      const steel_ball_kg = randomEven(16, 30);   // 16,18,...,30 (cho đẹp chart phải)
 
-      // Tăng 10 phút
+      // cái này float thoải mái
+      const voltage_ps = random(110, 125);
+      const imp1_rpm = random(110, 150);
+      const imp2_rpm = random(110, 150);
+
+      const cur_ps = random(100, 140);
+      const cur_i1 = random(100, 150);
+      const cur_i2 = random(100, 150);
+      const cur_dust = random(90, 130);
+
+      const pw_i1 = random(15, 30);
+      const pw_i2 = random(15, 30);
+      const pw_dust = random(10, 25);
+
+      db.run(
+        insertQuery,
+        [
+          batchCode,
+          date,
+          time,
+          shift,
+          power_kw,
+          steel_ball_kg,
+          voltage_ps,
+          imp1_rpm,
+          imp2_rpm,
+          cur_ps,
+          cur_i1,
+          cur_i2,
+          cur_dust,
+          pw_i1,
+          pw_i2,
+          pw_dust
+        ],
+        (err) => {
+          if (err) console.error("Insert error:", err);
+        }
+      );
+
       currentMinute += 10;
       if (currentMinute >= 60) {
         currentMinute = 0;
@@ -88,9 +163,6 @@ db.serialize(() => {
     batchIndex++;
   }
 
-  console.log("✅ DONE! Đã tạo dữ liệu theo dạng:");
-  console.log("- 1 ngày ~ 15–20 batch");
-  console.log("- Mỗi batch có nhiều time 10 phút với cùng batch_code");
-
+  console.log("✅ Seed hoàn tất! Power & Steel là số chẵn đẹp trai.");
   db.close();
 });

@@ -7,17 +7,12 @@ const db = new sqlite3.Database(dbPath);
 
 // ===================== SHIFT FUNCTION =====================
 function getShift(hour) {
-  // Shift 1: 22 → 23 + 0 → 5
-  if (hour >= 22 || hour < 6) return 1;
-
-  // Shift 2: 6 → 13
-  if (hour >= 6 && hour < 14) return 2;
-
-  // Shift 3: 14 → 21
-  return 3;
+  if (hour >= 22 || hour < 6) return 1; // Night
+  if (hour >= 6 && hour < 14) return 2; // Day
+  return 3;                             // Afternoon
 }
 
-// ============ CREATE TABLE (full schema with shift) =================
+// ================== CREATE TABLE ==========================
 const createTableQuery = `
 CREATE TABLE IF NOT EXISTS batches (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -26,49 +21,37 @@ CREATE TABLE IF NOT EXISTS batches (
   time TEXT NOT NULL,
   shift INTEGER NOT NULL,
 
-  -- Base
   power_kw REAL,
   steel_ball_kg REAL,
 
-  -- Voltage
   voltage_ps REAL,
-
-  -- Rotation Speed
   impeller1_rpm REAL,
   impeller2_rpm REAL,
 
-  -- Current
   current_ps REAL,
   current_impeller1 REAL,
   current_impeller2 REAL,
   current_dust REAL,
 
-  -- Power (kW)
   power_impeller1_kw REAL,
   power_impeller2_kw REAL,
   power_dust_kw REAL
-)
+);
 `;
 
 db.run(createTableQuery, (err) => {
-  if (err) return console.error("Lỗi tạo bảng:", err);
+  if (err) console.error("Lỗi tạo bảng:", err);
 });
 
 function formatTime(h, m) {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
-// random float
 function random(min, max) {
   return Math.random() * (max - min) + min;
 }
 
-// random integer EVEN (số chẵn)
-function randomEven(min, max) {
-  const r = Math.floor(Math.random() * (max - min + 1)) + min; // int
-  return r % 2 === 0 ? r : r + 1 > max ? r - 1 : r + 1; // ép thành số chẵn trong khoảng
-}
-
+// ======================= SEED START ==========================
 db.serialize(() => {
   console.log("🧹 Xóa dữ liệu cũ...");
   db.run("DELETE FROM batches");
@@ -85,84 +68,68 @@ db.serialize(() => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
-  const date = "2025-12-01";
-  const dateCompact = date.replace(/-/g, "").slice(2);
+  // 2 ngày để test
+  const dates = ["2025-12-01", "2025-12-02"];
 
-  const totalBatches = 15 + Math.floor(Math.random() * 6);
+  const BATCH_DURATION_MIN = 120; // 2 tiếng
+  const STEP_MIN = 2;             // 2 phút 1 record
+  const STEPS_PER_BATCH = BATCH_DURATION_MIN / STEP_MIN; // 60
 
-  let currentHour = 0;
-  let currentMinute = 0;
-  let batchIndex = 0;
+  dates.forEach((date) => {
+    console.log("📅 SEED NGÀY:", date);
 
-  console.log(`🚀 Seed ${totalBatches} batch`);
+    // MỖI NGÀY RESET LẠI, KHÔNG CHUNG GIỜ VỚI NGÀY KHÁC
+    for (let batchIndex = 0; batchIndex < 12; batchIndex++) {
+      const batchStartMinutes = batchIndex * BATCH_DURATION_MIN; // 0,120,240,...,1320
 
-  while (currentHour < 24 && batchIndex < totalBatches) {
-    const batchCode = `B${dateCompact}_${String(batchIndex).padStart(4, "0")}`;
+      const dateCompact = date.replace(/-/g, "").slice(2);
+      const batchCode = `B${dateCompact}_${String(batchIndex).padStart(4, "0")}`;
 
-    const durationMinutes = (4 + Math.floor(Math.random() * 8)) * 10; // 40–120 minutes
-    const steps = durationMinutes / 10;
-
-    console.log(`▶ Batch ${batchCode} | steps=${steps}`);
-
-    for (let s = 0; s < steps; s++) {
-      if (currentHour >= 24) break;
-
-      const time = formatTime(currentHour, currentMinute);
-      const shift = getShift(currentHour);
-
-      // ====== CHỈNH Ở ĐÂY: power & steel = số chẵn ======
-      const power_kw = randomEven(20, 34);        // 20,22,...,34
-      const steel_ball_kg = randomEven(16, 30);   // 16,18,...,30 (cho đẹp chart phải)
-
-      // cái này float thoải mái
-      const voltage_ps = random(110, 125);
-      const imp1_rpm = random(110, 150);
-      const imp2_rpm = random(110, 150);
-
-      const cur_ps = random(100, 140);
-      const cur_i1 = random(100, 150);
-      const cur_i2 = random(100, 150);
-      const cur_dust = random(90, 130);
-
-      const pw_i1 = random(15, 30);
-      const pw_i2 = random(15, 30);
-      const pw_dust = random(10, 25);
-
-      db.run(
-        insertQuery,
-        [
-          batchCode,
-          date,
-          time,
-          shift,
-          power_kw,
-          steel_ball_kg,
-          voltage_ps,
-          imp1_rpm,
-          imp2_rpm,
-          cur_ps,
-          cur_i1,
-          cur_i2,
-          cur_dust,
-          pw_i1,
-          pw_i2,
-          pw_dust
-        ],
-        (err) => {
-          if (err) console.error("Insert error:", err);
-        }
+      console.log(
+        `  ▶ Batch ${batchCode} | start=${batchStartMinutes} phút | steps=${STEPS_PER_BATCH}`
       );
 
-      currentMinute += 10;
-      if (currentMinute >= 60) {
-        currentMinute = 0;
-        currentHour += 1;
+      for (let s = 0; s < STEPS_PER_BATCH; s++) {
+        const totalMinutes = batchStartMinutes + s * STEP_MIN; // luôn < 1440 vì 12×120 = 1440
+
+        const hour = Math.floor(totalMinutes / 60);
+        const minute = totalMinutes % 60;
+
+        const time = formatTime(hour, minute);
+        const shift = getShift(hour);
+
+        // Power nhỏ → tổng batch ~ 20–35, hợp trục chart 0–35
+        const power_kw = random(0.3, 0.6);
+        const steel_ball_kg = random(0.2, 0.5);
+
+        db.run(
+          insertQuery,
+          [
+            batchCode,
+            date,
+            time,
+            shift,
+            power_kw,
+            steel_ball_kg,
+            random(110, 125),
+            random(110, 150),
+            random(110, 150),
+            random(100, 140),
+            random(100, 150),
+            random(100, 150),
+            random(90, 130),
+            random(15, 30),
+            random(15, 30),
+            random(10, 25),
+          ],
+          (err) => {
+            if (err) console.error("Insert error:", err);
+          }
+        );
       }
     }
+  });
 
-    batchIndex++;
-  }
-
-  console.log("✅ Seed hoàn tất! Power & Steel là số chẵn đẹp trai.");
+  console.log("🎉 SEED HOÀN TẤT: 2 ngày × 12 batch/ngày × 60 record/batch");
   db.close();
 });

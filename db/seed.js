@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS batches (
   current_impeller2 REAL,
   current_dust REAL,
 
+  current_main REAL,        -- ⭐ dòng điện chính (A), dùng cho chart Current(A)
+
   power_impeller1_kw REAL,
   power_impeller2_kw REAL,
   power_dust_kw REAL
@@ -63,9 +65,10 @@ db.serialize(() => {
       voltage_ps,
       impeller1_rpm, impeller2_rpm,
       current_ps, current_impeller1, current_impeller2, current_dust,
+      current_main,
       power_impeller1_kw, power_impeller2_kw, power_dust_kw
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   // 2 ngày để test
@@ -102,6 +105,18 @@ db.serialize(() => {
         const power_kw = random(0.3, 0.6);
         const steel_ball_kg = random(0.2, 0.5);
 
+        // ==================== CURRENT_MAIN 1.0 – 1.3 ====================
+        // Dòng điện chính dạng wave nhẹ theo từng bước trong batch
+        const wave = Math.sin((s / STEPS_PER_BATCH) * Math.PI * 2) * 0.12; // biên độ ±0.12
+        const noise = random(-0.01, 0.01); // nhiễu nhỏ ±0.01
+        let current_main = 1.15 + wave + noise; // trung bình 1.15
+
+        // Clamp về 1.0 – 1.3 cho chắc
+        if (current_main < 1.0) current_main = 1.0;
+        if (current_main > 1.3) current_main = 1.3;
+        current_main = Number(current_main.toFixed(3));
+
+        // ==================== INSERT ====================
         db.run(
           insertQuery,
           [
@@ -111,16 +126,17 @@ db.serialize(() => {
             shift,
             power_kw,
             steel_ball_kg,
-            random(110, 125),
-            random(110, 150),
-            random(110, 150),
-            random(100, 140),
-            random(100, 150),
-            random(100, 150),
-            random(90, 130),
-            random(15, 30),
-            random(15, 30),
-            random(10, 25),
+            random(110, 125), // voltage_ps
+            random(110, 150), // impeller1_rpm
+            random(110, 150), // impeller2_rpm
+            random(100, 140), // current_ps
+            random(100, 150), // current_impeller1
+            random(100, 150), // current_impeller2
+            random(90, 130),  // current_dust
+            current_main,     // ⭐ current_main (A) cho chart
+            random(15, 30),   // power_impeller1_kw
+            random(15, 30),   // power_impeller2_kw
+            random(10, 25),   // power_dust_kw
           ],
           (err) => {
             if (err) console.error("Insert error:", err);

@@ -53,6 +53,68 @@ function getAlarmSettings(steelBallType, callback) {
   });
 }
 
+/* ===== Meta để ghi vào bảng alarms ===== */
+const PARAM_META = {
+  steel_ball_weight: {
+    type: "Steel Ball Weight",
+    location: "Steel Ball",
+  },
+  current_ps: {
+    type: "Current (A)",
+    location: "Power Supply",
+  },
+  voltage_ps: {
+    type: "Voltage (V)",
+    location: "Power Supply",
+  },
+  power_ps: {
+    type: "Power (kW)",
+    location: "Power Supply",
+  },
+};
+
+// Tạo alarm nếu chưa có alarm active cùng type + location
+function createAlarmIfNeeded(paramKey, value, limit) {
+  const meta = PARAM_META[paramKey] || {
+    type: paramKey,
+    location: "Main Panel",
+  };
+
+  const details = `Value ${Number(value).toFixed(3)} outside [${limit.lower} - ${limit.upper}]`;
+
+  const sqlCheck = `
+    SELECT id
+    FROM alarms
+    WHERE type = ? AND location = ? AND end_time IS NULL
+    LIMIT 1
+  `;
+
+  db.get(sqlCheck, [meta.type, meta.location], (err, row) => {
+    if (err) {
+      console.error("DB error checking existing alarm:", err);
+      return;
+    }
+
+    // Đã có alarm chưa được ack → không tạo thêm để tránh spam
+    if (row) return;
+
+    const sqlInsert = `
+      INSERT INTO alarms (type, location, start_time, details)
+      VALUES (?, ?, datetime('now'), ?)
+    `;
+
+    db.run(sqlInsert, [meta.type, meta.location, details], (err2) => {
+      if (err2) {
+        console.error("DB error inserting alarm:", err2);
+      } else {
+        console.log(
+          `✅ Created alarm: ${meta.type} @ ${meta.location} - ${details}`
+        );
+      }
+    });
+  });
+}
+
 // GET /api/dashboard
 router.get("/", (req, res) => {
   // Tạm fix cứng Type A, sau này muốn truyền từ FE thì dùng query
@@ -101,33 +163,35 @@ router.get("/", (req, res) => {
           return res.status(500).json({ message: "DB error" });
         }
 
-        // ===== So sánh với ngưỡng để quyết định abnormal/operating =====
+        // ===== So sánh với ngưỡng để xác định bất thường + ghi alarms =====
         const abnormalFields = [];
 
         const checkRange = (key, value) => {
           const limit = limits[key];
-          if (!limit) return;          // chưa config thì bỏ qua
+          if (!limit) return; // chưa config thì bỏ qua
           if (value == null) return;
 
           if (value > limit.upper || value < limit.lower) {
             abnormalFields.push(key);
+            // Ghi vào bảng alarms (nếu chưa có alarm active cùng loại)
+            createAlarmIfNeeded(key, value, limit);
           }
         };
 
         // Map param_key trong alarm_settings với cột trong batches
         checkRange("steel_ball_weight", row.steel_ball_kg);
-        checkRange("current_main", row.current_main);
-        checkRange("voltage_ps", row.voltage_ps);
-        checkRange("power_kw", row.power_kw);
+        checkRange("current_ps", row.current_ps);   // so với current_ps
+        checkRange("voltage_ps", row.voltage_ps);   // so với voltage_ps
+        checkRange("power_ps", row.power_ps);       // so với power_ps
 
-        const machineStatus =
-          abnormalFields.length > 0 ? "abnormal" : "operating";
+        // Trạng thái gốc: operating, còn "abnormal" sẽ do FE suy ra từ bảng alarms
+        const machineStatusBase = "operating";
 
         // ===== Trả dữ liệu cho FE đúng format cũ =====
         const data = {
           batchId: row.batch_code,
-          machineStatus,        // 👈 giờ là operating / abnormal
-          abnormalFields,       // 👈 để dành, sau này muốn tô đỏ theo ngưỡng
+          machineStatus: machineStatusBase,
+          abnormalFields, // để dành nếu FE muốn tô đỏ theo param_key
 
           steelBallWeight: row.steel_ball_kg,
           steelBallTotal: totalSteelBall,
@@ -149,7 +213,7 @@ router.get("/", (req, res) => {
           },
 
           power: {
-            powerSupply: row.power_kw,
+            powerSupply: row.power_ps,
             impeller1: row.power_impeller1_kw,
             impeller2: row.power_impeller2_kw,
             dustCollector: row.power_dust_kw,

@@ -8,7 +8,7 @@ const unitMap = {
   steel_ball_weight: "KG",
   current_main: "A",
   voltage_ps: "V",
-  power_kw: "kW",
+  power_ps: "kW",
 };
 
 // ✅ GET /api/alarm-settings?steelBallType=Type%20A

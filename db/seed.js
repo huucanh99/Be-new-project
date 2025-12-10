@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS batches (
 
   current_main REAL,        -- ⭐ dòng điện chính (A), dùng cho chart Current(A)
 
+  power_ps REAL,            -- ⭐ Power Supply (kW) riêng
   power_impeller1_kw REAL,
   power_impeller2_kw REAL,
   power_dust_kw REAL
@@ -66,9 +67,10 @@ db.serialize(() => {
       impeller1_rpm, impeller2_rpm,
       current_ps, current_impeller1, current_impeller2, current_dust,
       current_main,
+      power_ps,
       power_impeller1_kw, power_impeller2_kw, power_dust_kw
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?)
   `;
 
   // 2 ngày để test
@@ -81,9 +83,8 @@ db.serialize(() => {
   dates.forEach((date) => {
     console.log("📅 SEED NGÀY:", date);
 
-    // MỖI NGÀY RESET LẠI, KHÔNG CHUNG GIỜ VỚI NGÀY KHÁC
     for (let batchIndex = 0; batchIndex < 12; batchIndex++) {
-      const batchStartMinutes = batchIndex * BATCH_DURATION_MIN; // 0,120,240,...,1320
+      const batchStartMinutes = batchIndex * BATCH_DURATION_MIN;
 
       const dateCompact = date.replace(/-/g, "").slice(2);
       const batchCode = `B${dateCompact}_${String(batchIndex).padStart(4, "0")}`;
@@ -93,7 +94,7 @@ db.serialize(() => {
       );
 
       for (let s = 0; s < STEPS_PER_BATCH; s++) {
-        const totalMinutes = batchStartMinutes + s * STEP_MIN; // luôn < 1440 vì 12×120 = 1440
+        const totalMinutes = batchStartMinutes + s * STEP_MIN;
 
         const hour = Math.floor(totalMinutes / 60);
         const minute = totalMinutes % 60;
@@ -106,15 +107,16 @@ db.serialize(() => {
         const steel_ball_kg = random(0.2, 0.5);
 
         // ==================== CURRENT_MAIN 1.0 – 1.3 ====================
-        // Dòng điện chính dạng wave nhẹ theo từng bước trong batch
-        const wave = Math.sin((s / STEPS_PER_BATCH) * Math.PI * 2) * 0.12; // biên độ ±0.12
-        const noise = random(-0.01, 0.01); // nhiễu nhỏ ±0.01
-        let current_main = 1.15 + wave + noise; // trung bình 1.15
+        const wave = Math.sin((s / STEPS_PER_BATCH) * Math.PI * 2) * 0.12;
+        const noise = random(-0.01, 0.01);
+        let current_main = 1.15 + wave + noise;
 
-        // Clamp về 1.0 – 1.3 cho chắc
         if (current_main < 1.0) current_main = 1.0;
         if (current_main > 1.3) current_main = 1.3;
         current_main = Number(current_main.toFixed(3));
+
+        // Power_ps: cho nó cùng range với power_kw (nguồn chính)
+        const power_ps = power_kw;
 
         // ==================== INSERT ====================
         db.run(
@@ -133,7 +135,8 @@ db.serialize(() => {
             random(100, 150), // current_impeller1
             random(100, 150), // current_impeller2
             random(90, 130),  // current_dust
-            current_main,     // ⭐ current_main (A) cho chart
+            current_main,     // ⭐ current_main (A)
+            power_ps,         // ⭐ power_ps (kW)
             random(15, 30),   // power_impeller1_kw
             random(15, 30),   // power_impeller2_kw
             random(10, 25),   // power_dust_kw

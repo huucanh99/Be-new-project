@@ -7,6 +7,8 @@ const alarmRoutes = require("./routes/alarms");
 const dailyReportRoutes = require("./routes/dailyReport");
 const historicalReportRoutes = require("./routes/historical");
 const alarmSettingsRoutes = require("./routes/alarmSettings");
+const componentLifeRoutes = require("./routes/componentLife");
+
 const app = express();
 
 // 👇 list những origin được phép gọi API
@@ -42,13 +44,14 @@ app.use("/api/alarms", alarmRoutes);
 app.use("/api/daily-report", dailyReportRoutes);
 app.use("/api/historical-report", historicalReportRoutes);
 app.use("/api/alarm-settings", alarmSettingsRoutes);
+app.use("/api/component-life", componentLifeRoutes);
 
 // 👇 listen trên 0.0.0.0 để máy khác truy cập được
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
-// const HOST = "0.0.0.0";
+// app.listen(PORT, () => {
+//   console.log(`Server running at http://localhost:${PORT}`);
+const HOST = "0.0.0.0";
 
-// app.listen(PORT, HOST, () => {
-//   console.log(`Server running at http://${HOST}:${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`Server running at http://${HOST}:${PORT}`);
 });

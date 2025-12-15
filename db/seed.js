@@ -9,7 +9,7 @@ const db = new sqlite3.Database(dbPath);
 function getShift(hour) {
   if (hour >= 22 || hour < 6) return 1; // Night
   if (hour >= 6 && hour < 14) return 2; // Day
-  return 3;                             // Afternoon
+  return 3; // Afternoon
 }
 
 // ================== CREATE TABLE ==========================
@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS batches (
   shift INTEGER NOT NULL,
 
   power_kw REAL,
-  steel_ball_kg REAL,
+  steel_ball_kg REAL,            -- (reporting) lượng tiêu thụ trong interval (kg / record)
+
+  steel_ball_level_kg REAL,      -- ⭐ (dashboard realtime) mức còn lại/khối lượng hiện tại trong hopper (kg)
 
   voltage_ps REAL,
   impeller1_rpm REAL,
@@ -33,9 +35,9 @@ CREATE TABLE IF NOT EXISTS batches (
   current_impeller2 REAL,
   current_dust REAL,
 
-  current_main REAL,        -- ⭐ dòng điện chính (A), dùng cho chart Current(A)
+  current_main REAL,             -- dòng điện chính (A), dùng cho chart Current(A)
 
-  power_ps REAL,            -- ⭐ Power Supply (kW) riêng
+  power_ps REAL,                 -- Power Supply (kW) riêng
   power_impeller1_kw REAL,
   power_impeller2_kw REAL,
   power_dust_kw REAL
@@ -62,7 +64,7 @@ db.serialize(() => {
   const insertQuery = `
     INSERT INTO batches (
       batch_code, date, time, shift,
-      power_kw, steel_ball_kg,
+      power_kw, steel_ball_kg, steel_ball_level_kg,
       voltage_ps,
       impeller1_rpm, impeller2_rpm,
       current_ps, current_impeller1, current_impeller2, current_dust,
@@ -70,18 +72,28 @@ db.serialize(() => {
       power_ps,
       power_impeller1_kw, power_impeller2_kw, power_dust_kw
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   // 2 ngày để test
   const dates = ["2025-12-01", "2025-12-02"];
 
   const BATCH_DURATION_MIN = 120; // 2 tiếng
-  const STEP_MIN = 2;             // 2 phút 1 record
+  const STEP_MIN = 2; // 2 phút 1 record
   const STEPS_PER_BATCH = BATCH_DURATION_MIN / STEP_MIN; // 60
+
+  // Giả lập silo/hopper ban đầu (kg)
+  const LEVEL_START_MIN = 350;
+  const LEVEL_START_MAX = 500;
+  const LEVEL_REFILL_MIN = 250;
+  const LEVEL_REFILL_MAX = 450;
+  const LEVEL_REFILL_THRESHOLD = 60; // dưới mức này sẽ "nạp thêm"
 
   dates.forEach((date) => {
     console.log("📅 SEED NGÀY:", date);
+
+    // Mỗi ngày bắt đầu với 1 mức tồn (kg)
+    let steelBallLevel = random(LEVEL_START_MIN, LEVEL_START_MAX);
 
     for (let batchIndex = 0; batchIndex < 12; batchIndex++) {
       const batchStartMinutes = batchIndex * BATCH_DURATION_MIN;
@@ -104,7 +116,28 @@ db.serialize(() => {
 
         // Power nhỏ → tổng batch ~ 20–35, hợp trục chart 0–35
         const power_kw = random(0.3, 0.6);
+
+        // steel_ball_kg: (reporting) lượng tiêu thụ trong interval
+        // Nếu sau này realtime 1–3s thì range này sẽ nhỏ hơn; hiện để demo theo interval 2 phút
         const steel_ball_kg = random(0.2, 0.5);
+
+        // steel_ball_level_kg: (dashboard) mức còn lại, giảm dần theo tiêu thụ + noise
+        // Thêm noise nhỏ để giống sensor cân (dao động nhẹ)
+        const sensorNoise = random(-0.15, 0.15);
+
+        // Giảm mức tồn
+        steelBallLevel = steelBallLevel - steel_ball_kg;
+
+        // Giả lập nạp thêm khi gần hết
+        if (steelBallLevel < LEVEL_REFILL_THRESHOLD) {
+          steelBallLevel = steelBallLevel + random(LEVEL_REFILL_MIN, LEVEL_REFILL_MAX);
+        }
+
+        // Clamp không âm
+        if (steelBallLevel < 0) steelBallLevel = 0;
+
+        // Giá trị sensor trả về
+        const steel_ball_level_kg = Number((steelBallLevel + sensorNoise).toFixed(3));
 
         // ==================== CURRENT_MAIN 1.0 – 1.3 ====================
         const wave = Math.sin((s / STEPS_PER_BATCH) * Math.PI * 2) * 0.12;
@@ -126,20 +159,23 @@ db.serialize(() => {
             date,
             time,
             shift,
+
             power_kw,
-            steel_ball_kg,
+            Number(steel_ball_kg.toFixed(3)),
+            steel_ball_level_kg,
+
             random(110, 125), // voltage_ps
             random(110, 150), // impeller1_rpm
             random(110, 150), // impeller2_rpm
             random(100, 140), // current_ps
             random(100, 150), // current_impeller1
             random(100, 150), // current_impeller2
-            random(90, 130),  // current_dust
-            current_main,     // ⭐ current_main (A)
-            power_ps,         // ⭐ power_ps (kW)
-            random(15, 30),   // power_impeller1_kw
-            random(15, 30),   // power_impeller2_kw
-            random(10, 25),   // power_dust_kw
+            random(90, 130), // current_dust
+            current_main, // current_main (A)
+            power_ps, // power_ps (kW)
+            random(15, 30), // power_impeller1_kw
+            random(15, 30), // power_impeller2_kw
+            random(10, 25), // power_dust_kw
           ],
           (err) => {
             if (err) console.error("Insert error:", err);

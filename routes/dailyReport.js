@@ -6,17 +6,11 @@ const { db } = require("../db/db");
 router.get("/", (req, res) => {
   const { date, uptoHour, reportType, batchId, shift } = req.query;
 
-  if (!date) {
-    return res.status(400).json({ message: "date is required" });
-  }
+  if (!date) return res.status(400).json({ message: "date is required" });
 
   const hourLimit = uptoHour ? parseInt(uptoHour, 10) : 23;
 
-  // =========================
-  // 1. Lấy list batch cho dropdown
-  //    Batch Summary: lấy toàn bộ batch trong ngày (KHÔNG lọc theo giờ)
-  //    Các report khác: dùng full day cho dropdown
-  // =========================
+  // 1) batch list
   const batchSql = `
     SELECT DISTINCT batch_code
     FROM batches
@@ -32,19 +26,16 @@ router.get("/", (req, res) => {
 
     const batchIds = (batchRows || []).map((r) => r.batch_code);
 
-    // =========================
-    // 2. WHERE clause chính cho data
-    // =========================
+    // 2) WHERE chính
     let whereClause = "";
     let params = [];
 
-    // ---- SHIFT REPORT ----
     if (reportType === "Shift Report" && shift) {
       whereClause = `WHERE date = ?`;
       params = [date];
 
       if (shift == 1) {
-        // Night Shift: 22:00 -> 06:00
+        // Night: 22->06
         whereClause += `
           AND (
             CAST(substr(time,1,2) AS INTEGER) >= 22
@@ -52,21 +43,19 @@ router.get("/", (req, res) => {
           )
         `;
       } else if (shift == 2) {
-        // Day Shift: 06:00 -> 14:00
+        // Day: 06->14
         whereClause += `
           AND CAST(substr(time,1,2) AS INTEGER) >= 6
           AND CAST(substr(time,1,2) AS INTEGER) < 14
         `;
       } else if (shift == 3) {
-        // Afternoon Shift: 14:00 -> 22:00
+        // Afternoon: 14->22
         whereClause += `
           AND CAST(substr(time,1,2) AS INTEGER) >= 14
           AND CAST(substr(time,1,2) AS INTEGER) < 22
         `;
       }
-    }
-    // ---- BATCH SUMMARY: KHÔNG LỌC THEO uptoHour, chỉ lọc date + batch ----
-    else if (reportType === "Batch Summary") {
+    } else if (reportType === "Batch Summary") {
       whereClause = `WHERE date = ?`;
       params = [date];
 
@@ -74,9 +63,7 @@ router.get("/", (req, res) => {
         whereClause += ` AND batch_code = ?`;
         params.push(batchId);
       }
-    }
-    // ---- DAILY TOTAL REPORT (và fallback khác) ----
-    else {
+    } else {
       whereClause = `
         WHERE date = ?
           AND CAST(substr(time,1,2) AS INTEGER) <= ?
@@ -84,164 +71,179 @@ router.get("/", (req, res) => {
       params = [date, hourLimit];
     }
 
-    // =========================
-    // 3. SQL lấy data
-    // =========================
-    const dataSql = `
-      SELECT batch_code, date, time, power_kw
-      FROM batches
-      ${whereClause}
-      ORDER BY batch_code ASC, time ASC
-    `;
+    // ✅ Query lấy BEFORE steel ball: dòng đầu tiên (time nhỏ nhất)
+    //    - Nếu Batch Summary: lấy theo batch
+    //    - Còn lại: lấy theo ngày
+    const beforeSql =
+      reportType === "Batch Summary" && batchId
+        ? `
+          SELECT steel_ball_level_kg
+          FROM batches
+          WHERE date = ? AND batch_code = ?
+          ORDER BY time ASC
+          LIMIT 1
+        `
+        : `
+          SELECT steel_ball_level_kg
+          FROM batches
+          WHERE date = ?
+          ORDER BY time ASC
+          LIMIT 1
+        `;
 
-    console.log("SQL:", dataSql.replace(/\s+/g, " "));
-    console.log("Params:", params);
+    const beforeParams =
+      reportType === "Batch Summary" && batchId ? [date, batchId] : [date];
 
-    db.all(dataSql, params, (err, rows) => {
-      if (err) {
-        console.error("Error loading daily report:", err);
+    db.get(beforeSql, beforeParams, (errBefore, beforeRow) => {
+      if (errBefore) {
+        console.error("Error loading steel ball BEFORE:", errBefore);
         return res.status(500).json({ message: "Database error" });
       }
 
-      if (!rows || rows.length === 0) {
-        return res.json({
-          date,
-          uptoHour: hourLimit,
-          reportType,
-          powerBatches: [],
-          powerTimeData: [],
-          steelBatches: [],
-          steelLineData: [],
-          alarmRows: [],
-          batchIds,
-        });
-      }
+      const steelBallBeforeKg = Number(beforeRow?.steel_ball_level_kg ?? 0) || 0;
 
-      let powerBatches = [];
-      let powerTimeData = [];
-      let steelBatches = [];
-      let steelLineData = [];
-      const alarmRows = []; // hiện tại chưa dùng
+      // 3) data query (✅ đúng cột steel_ball_level_kg để khỏi 500)
+      const dataSql = `
+        SELECT batch_code, date, time, power_kw, steel_ball_level_kg
+        FROM batches
+        ${whereClause}
+        ORDER BY batch_code ASC, time ASC
+      `;
 
-      // =====================================================
-      // 1) DAILY TOTAL REPORT — TỔNG POWER THEO BATCH
-      // =====================================================
-      if (reportType === "Daily Total Report") {
-        const batchAgg = {}; // { batch_code: { total } }
+      db.all(dataSql, params, (err, rows) => {
+        if (err) {
+          console.error("Error loading daily report:", err);
+          return res.status(500).json({ message: "Database error" });
+        }
 
-        rows.forEach((r) => {
-          const p = Number(r.power_kw) || 0;
-          if (!batchAgg[r.batch_code]) {
-            batchAgg[r.batch_code] = { total: 0 };
-          }
-          batchAgg[r.batch_code].total += p;
-        });
+        if (!rows || rows.length === 0) {
+          return res.json({
+            date,
+            uptoHour: hourLimit,
+            reportType,
+            powerBatches: [],
+            powerTimeData: [],
+            steelBatches: [],
+            steelLineData: [],
+            alarmRows: [],
+            batchIds,
+            steelBallBeforeKg,
+          });
+        }
 
-        // KHÔNG làm tròn, trả ra raw sum
-        powerBatches = Object.keys(batchAgg).map((batch) => ({
-          batch,
-          value: batchAgg[batch].total,
-        }));
+        let powerBatches = [];
+        let powerTimeData = [];
+        let steelBatches = [];
+        let steelLineData = [];
+        const alarmRows = [];
 
-        // steel = 0.8 * power, KHÔNG làm tròn
-        steelBatches = powerBatches.map((b) => ({
-          batch: b.batch,
-          value: b.value * 0.8,
-        }));
+        // 1) DAILY TOTAL
+        if (reportType === "Daily Total Report") {
+          const batchAgg = {};
 
-        return res.json({
-          date,
-          uptoHour: hourLimit,
-          reportType,
-          powerBatches,
-          powerTimeData: [],
-          steelBatches,
-          steelLineData: [],
-          alarmRows,
-          batchIds,
-        });
-      }
+          rows.forEach((r) => {
+            const p = Number(r.power_kw) || 0;
+            if (!batchAgg[r.batch_code]) batchAgg[r.batch_code] = { total: 0 };
+            batchAgg[r.batch_code].total += p;
+          });
 
-      // =====================================================
-      // 2) BATCH SUMMARY — TRẢ FULL TIME SERIES CỦA BATCH
-      //    (KHÔNG DÙNG uptoHour LỌC NỮA)
-      // =====================================================
-      if (reportType === "Batch Summary") {
-        powerTimeData = rows.map((r) => ({
-          time: r.time,
-          value: Number(r.power_kw) || 0, // giữ nguyên số từ DB
-        }));
+          powerBatches = Object.keys(batchAgg).map((batch) => ({
+            batch,
+            value: batchAgg[batch].total,
+          }));
 
-        steelLineData = rows.map((r) => {
-          const p = Number(r.power_kw) || 0;
-          return {
+          steelBatches = powerBatches.map((b) => ({
+            batch: b.batch,
+            value: b.value * 0.8,
+          }));
+
+          return res.json({
+            date,
+            uptoHour: hourLimit,
+            reportType,
+            powerBatches,
+            powerTimeData: [],
+            steelBatches,
+            steelLineData: [],
+            alarmRows,
+            batchIds,
+            steelBallBeforeKg,
+          });
+        }
+
+        // 2) BATCH SUMMARY
+        if (reportType === "Batch Summary") {
+          powerTimeData = rows.map((r) => ({
             time: r.time,
-            value: p * 0.8, // KHÔNG làm tròn, để FE tự format
-          };
-        });
+            value: Number(r.power_kw) || 0,
+          }));
 
-        return res.json({
-          date,
-          uptoHour: hourLimit, // FE vẫn có thể hiển thị, nhưng không dùng để lọc
-          reportType,
-          powerBatches: [],
-          powerTimeData,
-          steelBatches: [],
-          steelLineData,
-          alarmRows,
-          batchIds,
-        });
-      }
+          steelLineData = rows.map((r) => {
+            const p = Number(r.power_kw) || 0;
+            return { time: r.time, value: p * 0.8 };
+          });
 
-      // =====================================================
-      // 3) SHIFT REPORT — TỔNG POWER THEO BATCH TRONG CA
-      // =====================================================
-      if (reportType === "Shift Report") {
-        const batchAgg = {};
+          return res.json({
+            date,
+            uptoHour: hourLimit,
+            reportType,
+            powerBatches: [],
+            powerTimeData,
+            steelBatches: [],
+            steelLineData,
+            alarmRows,
+            batchIds,
+            steelBallBeforeKg,
+          });
+        }
 
-        rows.forEach((r) => {
-          const p = Number(r.power_kw) || 0;
-          if (!batchAgg[r.batch_code]) {
-            batchAgg[r.batch_code] = { total: 0 };
-          }
-          batchAgg[r.batch_code].total += p;
-        });
+        // 3) SHIFT REPORT
+        if (reportType === "Shift Report") {
+          const batchAgg = {};
 
-        // KHÔNG làm tròn
-        powerBatches = Object.keys(batchAgg).map((batch) => ({
-          batch,
-          value: batchAgg[batch].total,
-        }));
+          rows.forEach((r) => {
+            const p = Number(r.power_kw) || 0;
+            if (!batchAgg[r.batch_code]) batchAgg[r.batch_code] = { total: 0 };
+            batchAgg[r.batch_code].total += p;
+          });
 
-        steelBatches = powerBatches.map((b) => ({
-          batch: b.batch,
-          value: b.value * 0.8,
-        }));
+          powerBatches = Object.keys(batchAgg).map((batch) => ({
+            batch,
+            value: batchAgg[batch].total,
+          }));
 
+          steelBatches = powerBatches.map((b) => ({
+            batch: b.batch,
+            value: b.value * 0.8,
+          }));
+
+          return res.json({
+            date,
+            uptoHour: hourLimit,
+            reportType,
+            powerBatches,
+            powerTimeData: [],
+            steelBatches,
+            steelLineData: [],
+            alarmRows,
+            batchIds,
+            steelBallBeforeKg,
+          });
+        }
+
+        // fallback
         return res.json({
           date,
           uptoHour: hourLimit,
           reportType,
-          powerBatches,
+          powerBatches: [],
           powerTimeData: [],
-          steelBatches,
+          steelBatches: [],
           steelLineData: [],
           alarmRows,
           batchIds,
+          steelBallBeforeKg,
         });
-      }
-
-      // Fallback nếu reportType lạ
-      return res.json({
-        date,
-        uptoHour: hourLimit,
-        reportType,
-        powerBatches: [],
-        powerTimeData: [],
-        steelBatches: [],
-        steelLineData: [],
-        alarmRows,
-        batchIds,
       });
     });
   });

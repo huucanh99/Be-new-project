@@ -8,7 +8,7 @@ const dailyReportRoutes = require("./routes/dailyReport");
 const historicalReportRoutes = require("./routes/historical");
 const alarmSettingsRoutes = require("./routes/alarmSettings");
 const componentLifeRoutes = require("./routes/componentLife");
-
+const steelTypeSettings = require("./routes/steelTypeSettings");
 const app = express();
 
 // 👇 list những origin được phép gọi API
@@ -45,6 +45,7 @@ app.use("/api/daily-report", dailyReportRoutes);
 app.use("/api/historical-report", historicalReportRoutes);
 app.use("/api/alarm-settings", alarmSettingsRoutes);
 app.use("/api/component-life", componentLifeRoutes);
+app.use("/api/steel-type-settings", steelTypeSettings);
 
 // 👇 listen trên 0.0.0.0 để máy khác truy cập được
 const PORT = process.env.PORT || 4000;

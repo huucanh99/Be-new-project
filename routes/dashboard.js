@@ -102,9 +102,6 @@ function createAlarmIfNeeded(paramKey, value, limit) {
 // ======================= GET /api/dashboard =======================
 // Requirement khách hàng: Dashboard page = realtime snapshot only
 router.get("/", (req, res) => {
-  // Tạm fix cứng Type A, sau này muốn truyền từ FE thì dùng query (?steelBallType=Type%20A)
-  const steelBallType = "Type A";
-
   getLatestBatch((err, row) => {
     if (err) {
       console.error("DB error getLatestBatch /api/dashboard:", err);
@@ -115,6 +112,7 @@ router.get("/", (req, res) => {
     if (!row) {
       return res.status(200).json({
         batchId: "-",
+        steelBallType: "-", // ✅ thêm
         machineStatus: "offline",
 
         // Realtime sensor snapshot (no totals)
@@ -138,6 +136,10 @@ router.get("/", (req, res) => {
         abnormalFields: [],
       });
     }
+
+    // ✅ Lấy steel ball type từ DB (fallback nếu DB chưa có cột/giá trị)
+    const steelBallType =
+      (row.steel_ball_type && String(row.steel_ball_type).trim()) || "Type A";
 
     getAlarmSettings(steelBallType, (err2, limits) => {
       if (err2) {
@@ -175,6 +177,7 @@ router.get("/", (req, res) => {
       // ===== Response snapshot only (NO steelBallTotal) =====
       const data = {
         batchId: row.batch_code,
+        steelBallType, // ✅ thêm
         machineStatus: machineStatusBase,
         abnormalFields,
 

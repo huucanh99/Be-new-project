@@ -1,6 +1,7 @@
 // seed-batches.js
 const sqlite3 = require("sqlite3").verbose();
 const path = require("path");
+const bcrypt = require("bcrypt"); // ✅ NEW
 
 const dbPath = path.resolve(__dirname, "database.sqlite");
 const db = new sqlite3.Database(dbPath);
@@ -61,7 +62,19 @@ CREATE TABLE IF NOT EXISTS steel_type_settings (
 );
 `;
 
+// ✅ NEW: users table for login + role
+const createUsersTableQuery = `
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  role TEXT CHECK(role IN ('admin','customer')) NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+`;
+
 db.serialize(() => {
+  // ===== Create tables =====
   db.run(createBatchesTableQuery, (err) => {
     if (err) console.error("Lỗi tạo bảng batches:", err);
   });
@@ -70,8 +83,11 @@ db.serialize(() => {
     if (err) console.error("Lỗi tạo bảng steel_type_settings:", err);
   });
 
+  db.run(createUsersTableQuery, (err) => {
+    if (err) console.error("Lỗi tạo bảng users:", err);
+  });
+
   // ✅ Nếu DB cũ đã có bảng batches nhưng chưa có cột steel_ball_type
-  // SQLite không có "ADD COLUMN IF NOT EXISTS", nên thử ALTER và bỏ qua nếu đã tồn tại.
   db.run(`ALTER TABLE batches ADD COLUMN steel_ball_type TEXT`, (err) => {
     if (err) {
       if (!String(err.message || "").includes("duplicate column")) {
@@ -84,6 +100,9 @@ db.serialize(() => {
   console.log("🧹 Xóa dữ liệu cũ...");
   db.run("DELETE FROM batches");
   db.run("DELETE FROM steel_type_settings");
+
+  // ✅ NEW: nếu em muốn reset user mỗi lần seed thì mở dòng dưới
+  // db.run("DELETE FROM users");
 
   // ====== Seed steel type settings (coefficient theo kWh) ======
   const typeSettings = [
@@ -105,6 +124,30 @@ db.serialize(() => {
   });
 
   insertTypeSetting.finalize();
+
+  // ✅ NEW: Seed users (admin + customer)
+  (async () => {
+    try {
+      const adminHash = await bcrypt.hash("admin123", 10);
+      const customerHash = await bcrypt.hash("123456", 10);
+
+      db.run(
+        `INSERT OR IGNORE INTO users(username, password_hash, role) VALUES (?,?,?)`,
+        ["admin", adminHash, "admin"],
+        (err) => err && console.error("Seed admin error:", err.message)
+      );
+
+      db.run(
+        `INSERT OR IGNORE INTO users(username, password_hash, role) VALUES (?,?,?)`,
+        ["customer", customerHash, "customer"],
+        (err) => err && console.error("Seed customer error:", err.message)
+      );
+
+      console.log("👤 Seed users done: admin/admin123 & customer/123456");
+    } catch (e) {
+      console.error("Seed users failed:", e.message);
+    }
+  })();
 
   // ====== Seed batches ======
   const insertQuery = `
@@ -207,5 +250,9 @@ db.serialize(() => {
   });
 
   console.log("🎉 SEED HOÀN TẤT: 2 ngày × 12 batch/ngày × 60 record/batch");
-  db.close();
+
+  // ✅ Close DB sau một chút để async seed users kịp chạy
+  setTimeout(() => {
+    db.close();
+  }, 300);
 });

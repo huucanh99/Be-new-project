@@ -8,7 +8,7 @@ const db = new sqlite3.Database(dbPath);
 function initDb() {
   console.log("✅ SQLite DB connected. Initializing runtime tables...");
 
-  // Bảng alarm_settings (đã làm)
+  // Bảng alarm_settings
   const createAlarmSettings = `
     CREATE TABLE IF NOT EXISTS alarm_settings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -21,7 +21,7 @@ function initDb() {
     );
   `;
 
-  // 🔹 Bảng mới: component_life
+  // 🔹 Bảng component_life
   const createComponentLife = `
     CREATE TABLE IF NOT EXISTS component_life (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,15 +31,24 @@ function initDb() {
       last_reset_at TEXT
     );
   `;
+
   // 🔹 Bảng lưu lịch sử cảnh báo
   const createAlarms = `
     CREATE TABLE IF NOT EXISTS alarms (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      type TEXT NOT NULL,          -- vd: "Current Abnormality", "Lifetime Warning"
-      location TEXT,               -- vị trí: "Impeller 1", "Claw 2", "Steel Ball"
-      start_time TEXT NOT NULL,    -- thời điểm bắt đầu cảnh báo
-      end_time TEXT,               -- khi cảnh báo kết thúc sẽ cập nhật
-      details TEXT                 -- mô tả thêm: "Overtime", "1.35A > upper 1.30A"
+      type TEXT NOT NULL,
+      location TEXT,
+      start_time TEXT NOT NULL,
+      end_time TEXT,
+      details TEXT
+    );
+  `;
+
+  // ✅ NEW: tick_state (lưu mốc tick cuối để BE tự bù giờ)
+  const createTickState = `
+    CREATE TABLE IF NOT EXISTS tick_state (
+      key TEXT PRIMARY KEY,
+      last_tick_at INTEGER NOT NULL
     );
   `;
 
@@ -53,12 +62,29 @@ function initDb() {
       if (err) console.error("❌ Error create component_life:", err);
       else console.log("✅ Bảng component_life đã sẵn sàng.");
     });
+
     db.run(createAlarms, (err) => {
       if (err) console.error("❌ Error create alarms:", err);
       else console.log("✅ Bảng alarms đã sẵn sàng.");
     });
 
-    // 🔹 Seed một lần các component nếu bảng đang trống
+    // ✅ create tick_state
+    db.run(createTickState, (err) => {
+      if (err) console.error("❌ Error create tick_state:", err);
+      else console.log("✅ Bảng tick_state đã sẵn sàng.");
+    });
+
+    // ✅ seed tick_state (1 dòng key='component_life')
+    const seedTickState = `
+      INSERT OR IGNORE INTO tick_state(key, last_tick_at)
+      VALUES ('component_life', strftime('%s','now') * 1000)
+    `;
+    db.run(seedTickState, (err) => {
+      if (err) console.error("❌ Error seed tick_state:", err);
+      else console.log("✅ Seed xong tick_state (component_life).");
+    });
+
+    // 🔹 Seed component_life nếu trống
     const checkSeed = `SELECT COUNT(*) AS cnt FROM component_life`;
     db.get(checkSeed, [], (err, row) => {
       if (err) {

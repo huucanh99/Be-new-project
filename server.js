@@ -15,6 +15,9 @@ const steelTypeSettings = require("./routes/steelTypeSettings");
 const authRoutes = require("./routes/auth");
 const { requireAuth, requireAdmin } = require("./middleware/auth");
 
+// ✅ NEW: component life ticker (auto tick in BE)
+const { startComponentLifeTicker } = require("./controllers/componentLifeTicker");
+
 const app = express();
 
 // 👇 list những origin được phép gọi API
@@ -39,6 +42,7 @@ app.use(
 
 app.use(express.json());
 
+// ✅ init DB tables + seed runtime tables
 initDb();
 
 app.get("/", (req, res) => {
@@ -59,13 +63,31 @@ app.use("/api/steel-type-settings", requireAuth, steelTypeSettings);
 // ✅ Admin-only routes: cần login + role admin
 app.use("/api/component-life", requireAuth, requireAdmin, componentLifeRoutes);
 
-
 // 👇 listen trên 0.0.0.0 để máy khác truy cập được
 const PORT = process.env.PORT || 4000;
-// app.listen(PORT, () => {
-//   console.log(`Server running at http://localhost:${PORT}`);
 const HOST = "0.0.0.0";
+
+let stopTicker = null;
 
 app.listen(PORT, HOST, () => {
   console.log(`Server running at http://${HOST}:${PORT}`);
+
+  // ✅ start auto ticker AFTER server is up & DB init already ran
+  stopTicker = startComponentLifeTicker();
+  console.log("✅ ComponentLife ticker started");
 });
+
+// ✅ graceful shutdown (tránh interval chạy sau khi tắt)
+function shutdown() {
+  console.log("Shutting down server...");
+  try {
+    if (stopTicker) stopTicker();
+  } catch (e) {
+    console.error("Error stopping ticker:", e);
+  } finally {
+    process.exit(0);
+  }
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

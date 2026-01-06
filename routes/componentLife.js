@@ -25,25 +25,22 @@ function insertLifetimeAlarm(componentId, cb) {
     VALUES (?, ?, ?, NULL, ?)
   `;
   const params = [
-    "Lifetime Warning",          // type
-    componentId,                 // location (impeller1, filter, ...)
-    nowString(),                 // start_time
+    "Lifetime Warning", // type
+    componentId, // location (impeller1, filter, ...)
+    nowString(), // start_time
     "Exceeded lifetime threshold", // details
   ];
 
   db.run(sql, params, (err) => {
-    if (err) {
-      console.error("❌ Error insert lifetime alarm:", err);
-    } else {
-      console.log("✅ Lifetime alarm inserted for", componentId);
-    }
+    if (err) console.error("❌ Error insert lifetime alarm:", err);
+    else console.log("✅ Lifetime alarm inserted for", componentId);
     if (cb) cb(err);
   });
 }
 
 /* ======================================================
    GET /api/component-life  → load danh sách component
-   ====================================================== */
+====================================================== */
 router.get("/", (req, res) => {
   const sql = `
     SELECT id,
@@ -62,7 +59,7 @@ router.get("/", (req, res) => {
     }
 
     const data = rows.map((r) => ({
-      // FE dùng id = component_name = "impeller1", "blade1", ...
+      // FE dùng id = component_name
       id: r.component_name,
       component_name: r.component_name,
       accumulated_hours: r.accumulated_hours,
@@ -78,7 +75,7 @@ router.get("/", (req, res) => {
    POST /api/component-life
    body: { items: [ { id, warning_hours } ] }
    → update warning_hours cho từng component
-   ====================================================== */
+====================================================== */
 router.post("/", (req, res) => {
   const { items } = req.body || {};
   console.log("POST /api/component-life body:", req.body);
@@ -100,11 +97,8 @@ router.post("/", (req, res) => {
       const compName = it.id; // id = component_name luôn
 
       stmt.run([wh, compName], (err) => {
-        if (err) {
-          console.error("❌ Error update warning_hours:", err);
-        } else {
-          console.log(`✅ Updated warning_hours for ${compName} = ${wh}`);
-        }
+        if (err) console.error("❌ Error update warning_hours:", err);
+        else console.log(`✅ Updated warning_hours for ${compName} = ${wh}`);
       });
     });
 
@@ -122,42 +116,77 @@ router.post("/", (req, res) => {
    POST /api/component-life/reset
    body: { id }
    → accumulated_hours = 0, ghi last_reset_at = now
-   ====================================================== */
+   + reset tick_state để khỏi bù dồn ngay sau reset
+====================================================== */
 router.post("/reset", (req, res) => {
   const { id } = req.body || {};
   console.log("POST /api/component-life/reset body:", req.body);
 
-  if (!id) {
-    return res.status(400).json({ message: "id is required" });
-  }
+  if (!id) return res.status(400).json({ message: "id is required" });
 
-  const compName = id; // id = component_name
+  const compName = id;
 
-  const sql = `
-    UPDATE component_life
-    SET accumulated_hours = 0,
-        last_reset_at = ?
-    WHERE component_name = ?
-  `;
+  db.serialize(() => {
+    db.run("BEGIN IMMEDIATE", (eBegin) => {
+      if (eBegin) {
+        console.error("❌ BEGIN IMMEDIATE failed:", eBegin);
+        return res.status(500).json({ message: "DB busy" });
+      }
 
-  db.run(sql, [nowString(), compName], (err) => {
-    if (err) {
-      console.error("❌ Error reset component life:", err);
-      return res.status(500).json({ message: "DB error" });
-    }
+      const sql = `
+        UPDATE component_life
+        SET accumulated_hours = 0,
+            last_reset_at = ?
+        WHERE component_name = ?
+      `;
 
-    console.log(`✅ Reset component_life for ${compName} to 0h`);
-    res.json({ message: "Component reset to 0 hours" });
+      db.run(sql, [nowString(), compName], (err) => {
+        if (err) {
+          console.error("❌ Error reset component life:", err);
+          return db.run("ROLLBACK", () =>
+            res.status(500).json({ message: "DB error" })
+          );
+        }
+
+        // reset clock luôn
+        const resetClockSql = `
+          UPDATE tick_state
+          SET last_tick_at = ?
+          WHERE key = ?
+        `;
+
+        db.run(resetClockSql, [Date.now(), "component_life"], (err2) => {
+          if (err2) {
+            console.error("❌ Error reset tick_state:", err2);
+            return db.run("ROLLBACK", () =>
+              res.status(500).json({ message: "DB error" })
+            );
+          }
+
+          db.run("COMMIT", () => {
+            console.log(
+              `✅ Reset component_life for ${compName} to 0h + reset clock`
+            );
+            res.json({ message: "Component reset to 0 hours" });
+          });
+        });
+      });
+    });
   });
 });
 
 /* ======================================================
-   POST /api/component-life/tick
+   POST /api/component-life/tick  (manual debug)
    body: { id, deltaHours }
-   → tăng accumulated_hours, nếu vượt warning_hours lần đầu
-     thì ghi alarm vào bảng alarms
-   ====================================================== */
+   → tick 1 component + trigger alarm nếu vượt warning_hours
+   NOTE: default bị disable, bật bằng: ENABLE_MANUAL_TICK=1
+====================================================== */
 router.post("/tick", (req, res) => {
+  if (process.env.ENABLE_MANUAL_TICK !== "1") {
+    return res.status(403).json({ message: "Manual tick disabled" });
+    // bật bằng: ENABLE_MANUAL_TICK=1
+  }
+
   const { id, deltaHours } = req.body || {};
   const dh = Number(deltaHours) || 0;
 
@@ -167,7 +196,7 @@ router.post("/tick", (req, res) => {
       .json({ message: "id & positive deltaHours required" });
   }
 
-  const compName = id; // id = component_name
+  const compName = id;
 
   const selectSql = `
     SELECT component_name, accumulated_hours, warning_hours
@@ -180,9 +209,7 @@ router.post("/tick", (req, res) => {
       console.error("❌ Error select component_life:", err);
       return res.status(500).json({ message: "DB error" });
     }
-    if (!row) {
-      return res.status(404).json({ message: "Component not found" });
-    }
+    if (!row) return res.status(404).json({ message: "Component not found" });
 
     const before = Number(row.accumulated_hours) || 0;
     const warning = Number(row.warning_hours) || 0;
@@ -196,6 +223,7 @@ router.post("/tick", (req, res) => {
       SET accumulated_hours = ?
       WHERE component_name = ?
     `;
+
     db.run(updateSql, [after, compName], (err2) => {
       if (err2) {
         console.error("❌ Error update accumulated_hours:", err2);
@@ -203,7 +231,7 @@ router.post("/tick", (req, res) => {
       }
 
       console.log(
-        `✅ Tick ${compName}: ${before}h -> ${after}h (warning = ${warning}h)`
+        `✅ Manual Tick ${compName}: ${before}h -> ${after}h (warning = ${warning}h)`
       );
 
       if (warning > 0 && wasUnder && nowOverOrEqual) {

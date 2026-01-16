@@ -1,16 +1,24 @@
 // controllers/componentLifeTicker.js
 const { db } = require("../db/db");
 
-const TICK_INTERVAL_MS = 60_000; // 1 phút thật
-const DELTA_HOURS_PER_STEP = 1;  // +1 giờ ảo
+const TICK_INTERVAL_MS = 60_000;
+const DELTA_HOURS_PER_STEP = 1;
 
+/**
+ * Returns the current timestamp formatted as YYYY-MM-DD HH:mm:ss.
+ */
 function nowString() {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} `
-       + `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+    `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  );
 }
 
+/**
+ * Inserts a lifetime warning alarm for the given component.
+ */
 function insertLifetimeAlarm(componentId) {
   const sql = `
     INSERT INTO alarms (type, location, start_time, end_time, details)
@@ -20,10 +28,14 @@ function insertLifetimeAlarm(componentId) {
     "Lifetime Warning",
     componentId,
     nowString(),
-    "Exceeded lifetime threshold"
+    "Exceeded lifetime threshold",
   ]);
 }
 
+/**
+ * Executes one ticker cycle:
+ * updates component lifetime hours and triggers warning alarms if needed.
+ */
 function tickOnce() {
   return new Promise((resolve, reject) => {
     db.serialize(() => {
@@ -35,7 +47,9 @@ function tickOnce() {
           ["component_life"],
           (err, state) => {
             if (err || !state) {
-              return db.run("ROLLBACK", () => reject(err || "no tick_state"));
+              return db.run("ROLLBACK", () =>
+                reject(err || new Error("tick_state not found"))
+              );
             }
 
             const now = Date.now();
@@ -49,8 +63,10 @@ function tickOnce() {
             const delta = steps * DELTA_HOURS_PER_STEP;
 
             db.all(
-              `SELECT component_name, accumulated_hours, warning_hours
-               FROM component_life`,
+              `
+              SELECT component_name, accumulated_hours, warning_hours
+              FROM component_life
+              `,
               [],
               (err2, rows) => {
                 if (err2) {
@@ -78,12 +94,18 @@ function tickOnce() {
                 updateStmt.finalize(() => {
                   db.run(
                     "UPDATE tick_state SET last_tick_at = ? WHERE key = ?",
-                    [state.last_tick_at + steps * TICK_INTERVAL_MS, "component_life"],
+                    [
+                      state.last_tick_at +
+                        steps * TICK_INTERVAL_MS,
+                      "component_life",
+                    ],
                     (err3) => {
                       if (err3) {
                         return db.run("ROLLBACK", () => reject(err3));
                       }
-                      db.run("COMMIT", () => resolve({ steps, delta }));
+                      db.run("COMMIT", () =>
+                        resolve({ steps, delta })
+                      );
                     }
                   );
                 });
@@ -96,12 +118,16 @@ function tickOnce() {
   });
 }
 
+/**
+ * Starts the component lifetime ticker and runs it at fixed intervals.
+ */
 function startComponentLifeTicker() {
   let running = false;
 
   const run = async () => {
     if (running) return;
     running = true;
+
     try {
       const r = await tickOnce();
       if (r.steps > 0) {

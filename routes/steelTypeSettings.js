@@ -3,12 +3,15 @@ const express = require("express");
 const router = express.Router();
 const { db } = require("../db/db");
 
-// unit mặc định theo yêu cầu: kWh cho các trang report
 const DEFAULT_UNIT = "kgCO2/kWh";
 
-// ✅ GET /api/steel-type-settings?steelBallType=...
+/**
+ * GET /api/steel-type-settings
+ * Returns carbon coefficient/unit settings for a given steel ball type.
+ */
 router.get("/", (req, res) => {
   const { steelBallType } = req.query;
+
   if (!steelBallType) {
     return res.status(400).json({ error: "steelBallType is required" });
   }
@@ -22,13 +25,14 @@ router.get("/", (req, res) => {
 
   db.get(sql, [steelBallType], (err, row) => {
     if (err) {
-      console.error("DB error (GET /api/steel-type-settings):", err);
-      return res.status(500).json({ error: "DB error", detail: err.message });
+      console.error("DB error GET /api/steel-type-settings:", err);
+      return res.status(500).json({ error: "DB error" });
     }
 
-    // nếu chưa có settings cho type này
     if (!row) {
-      return res.status(404).json({ message: "No settings for this steelBallType" });
+      return res
+        .status(404)
+        .json({ message: "No settings for this steelBallType" });
     }
 
     res.json({
@@ -39,9 +43,10 @@ router.get("/", (req, res) => {
   });
 });
 
-// ✅ POST /api/steel-type-settings
-// body:
-// { steelBallType: "Type A", carbonCoefficient: 0.52, carbonUnit: "kgCO2/kWh" }
+/**
+ * POST /api/steel-type-settings
+ * Creates or updates carbon coefficient/unit settings for a given steel ball type.
+ */
 router.post("/", (req, res) => {
   const { steelBallType, carbonCoefficient, carbonUnit } = req.body;
 
@@ -51,7 +56,9 @@ router.post("/", (req, res) => {
 
   const coeff = Number(carbonCoefficient);
   if (Number.isNaN(coeff)) {
-    return res.status(400).json({ error: "carbonCoefficient must be a number" });
+    return res
+      .status(400)
+      .json({ error: "carbonCoefficient must be a number" });
   }
 
   const unit = (carbonUnit || DEFAULT_UNIT).trim();
@@ -65,10 +72,10 @@ router.post("/", (req, res) => {
       updated_at = excluded.updated_at
   `;
 
-  db.run(sql, [steelBallType.trim(), coeff, unit], function (err) {
+  db.run(sql, [steelBallType.trim(), coeff, unit], (err) => {
     if (err) {
-      console.error("DB error (POST /api/steel-type-settings):", err);
-      return res.status(500).json({ error: "DB error", detail: err.message });
+      console.error("DB error POST /api/steel-type-settings:", err);
+      return res.status(500).json({ error: "DB error" });
     }
     res.json({ success: true });
   });

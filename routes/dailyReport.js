@@ -3,12 +3,18 @@ const express = require("express");
 const router = express.Router();
 const { db } = require("../db/db");
 
-// helper: promise wrapper
+/**
+ * Promise wrapper for db.all() to use async/await.
+ */
 const dbAll = (sql, params = []) =>
   new Promise((resolve, reject) => {
     db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
   });
 
+/**
+ * GET /api/daily-report
+ * Builds daily/shift/batch reports from the batches table and returns aggregated data for charts.
+ */
 router.get("/", async (req, res) => {
   const { date, uptoHour, reportType, batchId, shift } = req.query;
 
@@ -17,14 +23,9 @@ router.get("/", async (req, res) => {
   const hourLimit = uptoHour ? parseInt(uptoHour, 10) : 23;
 
   try {
-    // =========================
-    // 0) Detect columns in batches table (avoid "no such column")
-    // =========================
     const cols = await dbAll(`PRAGMA table_info(batches)`);
     const colSet = new Set((cols || []).map((c) => c.name));
 
-    // choose the first existing column name for steel ball type
-    // (em có thể thêm tên cột khác vào list này nếu DB của em đặt khác)
     const typeCandidates = [
       "steel_ball_type",
       "steelBallType",
@@ -35,9 +36,6 @@ router.get("/", async (req, res) => {
 
     const typeCol = typeCandidates.find((c) => colSet.has(c)) || null;
 
-    // =========================
-    // 1) batch list (dropdown)
-    // =========================
     const batchSql = `
       SELECT DISTINCT batch_code
       FROM batches
@@ -47,9 +45,6 @@ router.get("/", async (req, res) => {
     const batchRows = await dbAll(batchSql, [date]);
     const batchIds = (batchRows || []).map((r) => r.batch_code);
 
-    // =========================
-    // 2) WHERE chính cho data
-    // =========================
     let whereClause = "";
     let params = [];
 
@@ -58,7 +53,6 @@ router.get("/", async (req, res) => {
       params = [date];
 
       if (shift == 1) {
-        // Night: 22->06
         whereClause += `
           AND (
             CAST(substr(time,1,2) AS INTEGER) >= 22
@@ -66,20 +60,17 @@ router.get("/", async (req, res) => {
           )
         `;
       } else if (shift == 2) {
-        // Day: 06->14
         whereClause += `
           AND CAST(substr(time,1,2) AS INTEGER) >= 6
           AND CAST(substr(time,1,2) AS INTEGER) < 14
         `;
       } else if (shift == 3) {
-        // Afternoon: 14->22
         whereClause += `
           AND CAST(substr(time,1,2) AS INTEGER) >= 14
           AND CAST(substr(time,1,2) AS INTEGER) < 22
         `;
       }
     } else if (reportType === "Batch Summary") {
-      // Batch Summary: không lọc uptoHour
       whereClause = `WHERE date = ?`;
       params = [date];
 
@@ -88,7 +79,6 @@ router.get("/", async (req, res) => {
         params.push(batchId);
       }
     } else {
-      // Daily Total + fallback: lọc theo uptoHour
       whereClause = `
         WHERE date = ?
           AND CAST(substr(time,1,2) AS INTEGER) <= ?
@@ -96,9 +86,6 @@ router.get("/", async (req, res) => {
       params = [date, hourLimit];
     }
 
-    // =========================
-    // 3) SQL lấy data (logic cũ, ✅ only select existing columns)
-    // =========================
     const typeSelect = typeCol ? `, ${typeCol} AS steel_ball_type` : ``;
 
     const dataSql = `
@@ -108,9 +95,6 @@ router.get("/", async (req, res) => {
       ORDER BY batch_code ASC, time ASC
     `;
 
-    console.log("SQL:", dataSql.replace(/\s+/g, " "));
-    console.log("Params:", params);
-
     const rows = await dbAll(dataSql, params);
 
     if (!rows || rows.length === 0) {
@@ -118,7 +102,7 @@ router.get("/", async (req, res) => {
         date,
         uptoHour: hourLimit,
         reportType,
-        steelBallType: null, // ✅ NEW
+        steelBallType: null,
         powerBatches: [],
         powerTimeData: [],
         steelBatches: [],
@@ -128,7 +112,6 @@ router.get("/", async (req, res) => {
       });
     }
 
-    // ✅ NEW: steelBallType from last row (or null)
     const lastRow = rows[rows.length - 1];
     const steelBallType = lastRow?.steel_ball_type ?? null;
 
@@ -138,9 +121,6 @@ router.get("/", async (req, res) => {
     let steelLineData = [];
     const alarmRows = [];
 
-    // =====================================================
-    // 1) DAILY TOTAL REPORT — tổng power theo batch
-    // =====================================================
     if (reportType === "Daily Total Report") {
       const batchAgg = {};
 
@@ -155,7 +135,6 @@ router.get("/", async (req, res) => {
         value: batchAgg[batch].total,
       }));
 
-      // steel = 0.8 * power (logic cũ)
       steelBatches = powerBatches.map((b) => ({
         batch: b.batch,
         value: b.value * 0.8,
@@ -165,7 +144,7 @@ router.get("/", async (req, res) => {
         date,
         uptoHour: hourLimit,
         reportType,
-        steelBallType, // ✅ NEW
+        steelBallType,
         powerBatches,
         powerTimeData: [],
         steelBatches,
@@ -175,9 +154,6 @@ router.get("/", async (req, res) => {
       });
     }
 
-    // =====================================================
-    // 2) BATCH SUMMARY — full time series của batch
-    // =====================================================
     if (reportType === "Batch Summary") {
       powerTimeData = rows.map((r) => ({
         time: r.time,
@@ -193,7 +169,7 @@ router.get("/", async (req, res) => {
         date,
         uptoHour: hourLimit,
         reportType,
-        steelBallType, // ✅ NEW
+        steelBallType,
         powerBatches: [],
         powerTimeData,
         steelBatches: [],
@@ -203,9 +179,6 @@ router.get("/", async (req, res) => {
       });
     }
 
-    // =====================================================
-    // 3) SHIFT REPORT — tổng power theo batch trong ca
-    // =====================================================
     if (reportType === "Shift Report") {
       const batchAgg = {};
 
@@ -229,7 +202,7 @@ router.get("/", async (req, res) => {
         date,
         uptoHour: hourLimit,
         reportType,
-        steelBallType, // ✅ NEW
+        steelBallType,
         powerBatches,
         powerTimeData: [],
         steelBatches,
@@ -239,12 +212,11 @@ router.get("/", async (req, res) => {
       });
     }
 
-    // fallback
     return res.json({
       date,
       uptoHour: hourLimit,
       reportType,
-      steelBallType, // ✅ NEW
+      steelBallType,
       powerBatches: [],
       powerTimeData: [],
       steelBatches: [],

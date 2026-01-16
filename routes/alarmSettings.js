@@ -3,7 +3,6 @@ const express = require("express");
 const router = express.Router();
 const { db } = require("../db/db");
 
-// Map cố định param_key -> đơn vị hiển thị
 const unitMap = {
   steel_ball_weight: "KG",
   current_main: "A",
@@ -11,10 +10,13 @@ const unitMap = {
   power_ps: "kW",
 };
 
-// ✅ GET /api/alarm-settings?steelBallType=Type%20A
-// Dùng cho tab Alarm Settings để load lại giá trị đã lưu
+/**
+ * GET /api/alarm-settings
+ * Returns saved alarm settings for a given steel ball type.
+ */
 router.get("/", (req, res) => {
   const { steelBallType } = req.query;
+
   if (!steelBallType) {
     return res.status(400).json({ error: "steelBallType is required" });
   }
@@ -27,8 +29,8 @@ router.get("/", (req, res) => {
 
   db.all(sql, [steelBallType], (err, rows) => {
     if (err) {
-      console.error("DB error (GET /api/alarm-settings):", err);
-      return res.status(500).json({ error: "DB error", detail: err.message });
+      console.error("DB error GET /api/alarm-settings:", err);
+      return res.status(500).json({ error: "DB error" });
     }
 
     const settings = {};
@@ -44,17 +46,10 @@ router.get("/", (req, res) => {
   });
 });
 
-// ✅ POST /api/alarm-settings
-// body FE gởi:
-// {
-//   "steelBallType": "Type A",
-//   "settings": {
-//     "steel_ball_weight": { "upper": 0.5, "lower": 0.2 },
-//     "current_main":      { "upper": 1.3, "lower": 1.0 },
-//     "voltage_ps":        { "upper": 125, "lower": 110 },
-//     "power_kw":          { "upper": 0.6, "lower": 0.3 }
-//   }
-// }
+/**
+ * POST /api/alarm-settings
+ * Creates or updates alarm settings for a given steel ball type.
+ */
 router.post("/", (req, res) => {
   const { steelBallType, settings } = req.body;
 
@@ -69,8 +64,7 @@ router.post("/", (req, res) => {
     return res.status(400).json({ error: "settings is empty" });
   }
 
-  const stmt = db.prepare(
-    `
+  const stmt = db.prepare(`
     INSERT INTO alarm_settings 
       (steel_ball_type, param_key, upper_limit, lower_limit, unit)
     VALUES (?, ?, ?, ?, ?)
@@ -78,15 +72,13 @@ router.post("/", (req, res) => {
       upper_limit = excluded.upper_limit,
       lower_limit = excluded.lower_limit,
       unit = excluded.unit
-  `
-  );
+  `);
 
   keys.forEach((key) => {
     const s = settings[key];
 
-    // Nếu param không support trong unitMap → bỏ qua
     if (!unitMap[key]) {
-      console.warn(`⚠️ Bỏ qua param_key không hỗ trợ: ${key}`);
+      console.warn(`Unsupported param_key skipped: ${key}`);
       return;
     }
 
@@ -94,19 +86,18 @@ router.post("/", (req, res) => {
     const lower = Number(s.lower);
 
     if (Number.isNaN(upper) || Number.isNaN(lower)) {
-      console.warn(`⚠️ upper/lower không hợp lệ cho param_key: ${key}`);
+      console.warn(`Invalid upper/lower values for param_key: ${key}`);
       return;
     }
 
     const unit = unitMap[key];
-
     stmt.run(steelBallType, key, upper, lower, unit);
   });
 
   stmt.finalize((err) => {
     if (err) {
-      console.error("DB error (POST /api/alarm-settings):", err);
-      return res.status(500).json({ error: "DB error", detail: err.message });
+      console.error("DB error POST /api/alarm-settings:", err);
+      return res.status(500).json({ error: "DB error" });
     }
     res.json({ success: true });
   });

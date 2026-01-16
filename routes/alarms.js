@@ -3,10 +3,13 @@ const express = require("express");
 const router = express.Router();
 const { db } = require("../db/db");
 
-/* ============= Helper: format datetime ============= */
+/**
+ * Returns the current timestamp formatted as YYYY-MM-DD HH:mm:ss.
+ */
 function nowString() {
   const now = new Date();
   const pad = (n) => String(n).padStart(2, "0");
+
   return (
     `${now.getFullYear()}-` +
     `${pad(now.getMonth() + 1)}-` +
@@ -17,10 +20,10 @@ function nowString() {
   );
 }
 
-/* ===================================================
-   GET /api/alarms
-   → trả về lịch sử alarm (mới nhất trước)
-   =================================================== */
+/**
+ * GET /api/alarms
+ * Returns alarm history ordered by most recent first.
+ */
 router.get("/", (req, res) => {
   const sql = `
     SELECT 
@@ -37,7 +40,7 @@ router.get("/", (req, res) => {
 
   db.all(sql, [], (err, rows) => {
     if (err) {
-      console.error("❌ DB error /api/alarms:", err);
+      console.error("DB error GET /api/alarms:", err);
       return res.status(500).json({ message: "DB error" });
     }
 
@@ -45,11 +48,10 @@ router.get("/", (req, res) => {
   });
 });
 
-/* ===================================================
-   POST /api/alarms/ack
-   → “Acknowledge” tất cả alarm đang active
-     (end_time IS NULL) bằng cách set end_time = now
-   =================================================== */
+/**
+ * POST /api/alarms/ack/:id
+ * Acknowledges an active alarm by setting its end_time.
+ */
 router.post("/ack/:id", (req, res) => {
   const alarmId = req.params.id;
 
@@ -61,18 +63,16 @@ router.post("/ack/:id", (req, res) => {
 
   db.run(sql, [alarmId], function (err) {
     if (err) {
-      console.error("❌ DB error /api/alarms/ack:", err);
+      console.error("DB error POST /api/alarms/ack:", err);
       return res.status(500).json({ message: "DB error" });
     }
 
     if (this.changes === 0) {
-      // không có hàng nào được update: id sai hoặc alarm đã được ack rồi
       return res
         .status(404)
         .json({ message: "Alarm not found or already acknowledged" });
     }
 
-    console.log(`✅ Alarm ${alarmId} acknowledged`);
     res.json({ ok: true, updated: this.changes });
   });
 });

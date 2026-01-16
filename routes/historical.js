@@ -1,20 +1,18 @@
 // routes/historical.js
-// API cho Historical Chart (Daily / Monthly / Yearly)
-
 const express = require("express");
 const sqlite3 = require("sqlite3").verbose();
 const path = require("path");
 
 const router = express.Router();
 
-// ================== KẾT NỐI DB ==================
 const dbPath = path.resolve(__dirname, "../db/database.sqlite");
 const db = new sqlite3.Database(dbPath);
 
-// 2 phút / 1 record như file seed-batches.js
 const MINUTES_PER_RECORD = 2;
 
-// ================== Helper chạy query ==================
+/**
+ * Runs a SQL query and returns rows using a Promise (for async/await).
+ */
 function runQuery(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.all(sql, params, (err, rows) => {
@@ -24,78 +22,64 @@ function runQuery(sql, params = []) {
   });
 }
 
-// ================== Helper convert from/to ==================
+/**
+ * Expands the requested from/to range into an actual date range (YYYY-MM-DD) based on report type.
+ */
 function expandRange(reportType, from, to) {
   const type = reportType.toLowerCase();
 
   if (type === "daily") {
-    // from, to: 'YYYY-MM-DD'
     return { startDate: from, endDate: to };
   }
 
   if (type === "monthly") {
-    // from, to: 'YYYY-MM'
     const [fy, fm] = from.split("-").map(Number);
     const [ty, tm] = to.split("-").map(Number);
 
     const startDate = `${fy}-${String(fm).padStart(2, "0")}-01`;
 
-    // endDate = ngày cuối của tháng "to"
     const lastDay = new Date(ty, tm, 0).getDate();
-    const endDate = `${ty}-${String(tm).padStart(2, "0")}-${String(
-      lastDay
-    ).padStart(2, "0")}`;
+    const endDate = `${ty}-${String(tm).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
 
     return { startDate, endDate };
   }
 
   if (type === "yearly") {
-    // from, to: 'YYYY'
     const fy = Number(from);
     const ty = Number(to);
 
     const startDate = `${fy}-01-01`;
     const endDate = `${ty}-12-31`;
+
     return { startDate, endDate };
   }
 
-  // fallback
   return { startDate: from, endDate: to };
 }
 
-// ================== GET /api/historical-report ==================
 /**
- * Query params:
- *  - reportType: 'daily' | 'monthly' | 'yearly'
- *  - from:
- *      daily   -> 'YYYY-MM-DD'
- *      monthly -> 'YYYY-MM'
- *      yearly  -> 'YYYY'
- *  - to:   same format as 'from'
+ * GET /api/historical-report
+ * Returns summary totals and time series data for daily/monthly/yearly historical charts.
  */
 router.get("/", async (req, res) => {
   try {
     const { reportType = "daily", from, to } = req.query;
 
-    console.log("[HIST] /api/historical-report", req.query);
-
     if (!from || !to) {
       return res.status(400).json({
-        error: "Query 'from' và 'to' là bắt buộc",
+        error: "Query parameters 'from' and 'to' are required",
       });
     }
 
     const type = reportType.toLowerCase();
     if (!["daily", "monthly", "yearly"].includes(type)) {
       return res.status(400).json({
-        error: "reportType phải là 'daily', 'monthly' hoặc 'yearly'",
+        error: "reportType must be 'daily', 'monthly', or 'yearly'",
       });
     }
 
-    // Chuyển from/to thành startDate/endDate (YYYY-MM-DD)
     const { startDate, endDate } = expandRange(type, from, to);
 
-    // ===== 1) Summary chung trong khoảng ngày =====
     const summarySql = `
       SELECT 
         SUM(power_kw)      AS total_power_kw,
@@ -111,25 +95,20 @@ router.get("/", async (req, res) => {
       record_count: 0,
     };
 
-    const totalMinutes =
-      (summaryRow.record_count || 0) * MINUTES_PER_RECORD;
+    const totalMinutes = (summaryRow.record_count || 0) * MINUTES_PER_RECORD;
     const totalHours = totalMinutes / 60;
 
     const summary = {
       totalPowerKw: Number((summaryRow.total_power_kw || 0).toFixed(2)),
-      totalSteelBallKg: Number(
-        (summaryRow.total_steel_ball || 0).toFixed(2)
-      ),
+      totalSteelBallKg: Number((summaryRow.total_steel_ball || 0).toFixed(2)),
       totalTimeHours: Number(totalHours.toFixed(2)),
       recordCount: summaryRow.record_count || 0,
     };
 
-    // ===== 2) Dữ liệu seriesCurrent + seriesSteelBall =====
     let seriesCurrent = [];
     let seriesSteelBall = [];
 
     if (type === "daily") {
-      // DAILY: từng record chi tiết theo thời gian
       const sql = `
         SELECT
           date,
@@ -143,7 +122,7 @@ router.get("/", async (req, res) => {
       const rows = await runQuery(sql, [startDate, endDate]);
 
       seriesCurrent = rows.map((r) => ({
-        x: `${r.date} ${r.time}`, // FE có thể parse ra time
+        x: `${r.date} ${r.time}`,
         y: Number(r.current_main || 0),
       }));
 
@@ -154,7 +133,6 @@ router.get("/", async (req, res) => {
     }
 
     if (type === "monthly") {
-      // MONTHLY: group theo tháng YYYY-MM
       const sql = `
         SELECT
           substr(date, 1, 7) AS month,
@@ -168,7 +146,7 @@ router.get("/", async (req, res) => {
       const rows = await runQuery(sql, [startDate, endDate]);
 
       seriesCurrent = rows.map((r) => ({
-        x: r.month, // '2025-09'
+        x: r.month,
         y: Number((r.avg_current || 0).toFixed(3)),
       }));
 
@@ -179,7 +157,6 @@ router.get("/", async (req, res) => {
     }
 
     if (type === "yearly") {
-      // YEARLY: group theo năm YYYY
       const sql = `
         SELECT
           substr(date, 1, 4) AS year,
@@ -203,17 +180,16 @@ router.get("/", async (req, res) => {
       }));
     }
 
-    // ===== 3) Trả về =====
     res.json({
       reportType: type,
-      rawRange: { from, to },           // FE gửi gì trả lại để debug
-      dateRange: { startDate, endDate}, // range thật BE dùng
+      rawRange: { from, to },
+      dateRange: { startDate, endDate },
       summary,
       seriesCurrent,
       seriesSteelBall,
     });
   } catch (err) {
-    console.error("Lỗi /api/historical-report:", err);
+    console.error("Error GET /api/historical-report:", err);
     res.status(500).json({ error: "Internal Server Error" });
   }
 });

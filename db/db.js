@@ -5,10 +5,12 @@ const path = require("path");
 const dbPath = path.join(__dirname, "database.sqlite");
 const db = new sqlite3.Database(dbPath);
 
+/**
+ * Initializes database schema and seeds required runtime tables.
+ */
 function initDb() {
-  console.log("✅ SQLite DB connected. Initializing runtime tables...");
+  console.log("SQLite DB connected. Initializing tables...");
 
-  // Bảng alarm_settings
   const createAlarmSettings = `
     CREATE TABLE IF NOT EXISTS alarm_settings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -21,7 +23,6 @@ function initDb() {
     );
   `;
 
-  // 🔹 Bảng component_life
   const createComponentLife = `
     CREATE TABLE IF NOT EXISTS component_life (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,7 +33,6 @@ function initDb() {
     );
   `;
 
-  // 🔹 Bảng lưu lịch sử cảnh báo
   const createAlarms = `
     CREATE TABLE IF NOT EXISTS alarms (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,7 +44,6 @@ function initDb() {
     );
   `;
 
-  // ✅ NEW: tick_state (lưu mốc tick cuối để BE tự bù giờ)
   const createTickState = `
     CREATE TABLE IF NOT EXISTS tick_state (
       key TEXT PRIMARY KEY,
@@ -54,45 +53,45 @@ function initDb() {
 
   db.serialize(() => {
     db.run(createAlarmSettings, (err) => {
-      if (err) console.error("❌ Error create alarm_settings:", err);
-      else console.log("✅ Bảng alarm_settings đã sẵn sàng.");
+      if (err) console.error("Failed to create alarm_settings:", err);
+      else console.log("alarm_settings table ready.");
     });
 
     db.run(createComponentLife, (err) => {
-      if (err) console.error("❌ Error create component_life:", err);
-      else console.log("✅ Bảng component_life đã sẵn sàng.");
+      if (err) console.error("Failed to create component_life:", err);
+      else console.log("component_life table ready.");
     });
 
     db.run(createAlarms, (err) => {
-      if (err) console.error("❌ Error create alarms:", err);
-      else console.log("✅ Bảng alarms đã sẵn sàng.");
+      if (err) console.error("Failed to create alarms:", err);
+      else console.log("alarms table ready.");
     });
 
-    // ✅ create tick_state
     db.run(createTickState, (err) => {
-      if (err) console.error("❌ Error create tick_state:", err);
-      else console.log("✅ Bảng tick_state đã sẵn sàng.");
+      if (err) console.error("Failed to create tick_state:", err);
+      else console.log("tick_state table ready.");
     });
 
-    // ✅ seed tick_state (1 dòng key='component_life')
     const seedTickState = `
       INSERT OR IGNORE INTO tick_state(key, last_tick_at)
       VALUES ('component_life', strftime('%s','now') * 1000)
     `;
+
     db.run(seedTickState, (err) => {
-      if (err) console.error("❌ Error seed tick_state:", err);
-      else console.log("✅ Seed xong tick_state (component_life).");
+      if (err) console.error("Failed to seed tick_state:", err);
+      else console.log("tick_state seeded (component_life).");
     });
 
-    // 🔹 Seed component_life nếu trống
     const checkSeed = `SELECT COUNT(*) AS cnt FROM component_life`;
     db.get(checkSeed, [], (err, row) => {
       if (err) {
-        console.error("❌ Error check component_life:", err);
+        console.error("Failed to check component_life:", err);
         return;
       }
+
       if (row.cnt === 0) {
-        console.log("🌱 Seeding component_life...");
+        console.log("Seeding component_life table...");
+
         const insertSql = `
           INSERT INTO component_life (component_name, accumulated_hours, warning_hours)
           VALUES 
@@ -108,8 +107,8 @@ function initDb() {
         `;
 
         db.run(insertSql, (err2) => {
-          if (err2) console.error("❌ Error seed component_life:", err2);
-          else console.log("✅ Seed xong component_life.");
+          if (err2) console.error("Failed to seed component_life:", err2);
+          else console.log("component_life seeded.");
         });
       }
     });

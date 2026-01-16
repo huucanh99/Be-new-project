@@ -3,7 +3,9 @@ const express = require("express");
 const router = express.Router();
 const { db } = require("../db/db");
 
-// ======================= GET LATEST ROW =======================
+/**
+ * Fetches the latest batch row from the batches table.
+ */
 function getLatestBatch(callback) {
   const sqlLatest = `
     SELECT *
@@ -17,7 +19,9 @@ function getLatestBatch(callback) {
   });
 }
 
-// =================== ALARM SETTINGS BY TYPE ===================
+/**
+ * Loads alarm threshold settings for a given steel ball type.
+ */
 function getAlarmSettings(steelBallType, callback) {
   const sql = `
     SELECT param_key, upper_limit, lower_limit
@@ -39,7 +43,6 @@ function getAlarmSettings(steelBallType, callback) {
   });
 }
 
-/* ===== Meta để ghi vào bảng alarms ===== */
 const PARAM_META = {
   steel_ball_weight: {
     type: "Steel Ball Weight",
@@ -59,7 +62,9 @@ const PARAM_META = {
   },
 };
 
-// Tạo alarm nếu chưa có alarm active cùng type + location (chống spam)
+/**
+ * Creates an alarm only if there is no active alarm with the same type and location.
+ */
 function createAlarmIfNeeded(paramKey, value, limit) {
   const meta = PARAM_META[paramKey] || {
     type: paramKey,
@@ -81,7 +86,6 @@ function createAlarmIfNeeded(paramKey, value, limit) {
       return;
     }
 
-    // Đã có alarm active → không tạo thêm
     if (row) return;
 
     const sqlInsert = `
@@ -92,32 +96,28 @@ function createAlarmIfNeeded(paramKey, value, limit) {
     db.run(sqlInsert, [meta.type, meta.location, details], (err2) => {
       if (err2) {
         console.error("DB error inserting alarm:", err2);
-      } else {
-        console.log(`✅ Created alarm: ${meta.type} @ ${meta.location} - ${details}`);
       }
     });
   });
 }
 
-// ======================= GET /api/dashboard =======================
-// Requirement khách hàng: Dashboard page = realtime snapshot only
+/**
+ * GET /api/dashboard
+ * Returns a realtime snapshot of the latest batch row and checks thresholds to raise alarms.
+ */
 router.get("/", (req, res) => {
   getLatestBatch((err, row) => {
     if (err) {
-      console.error("DB error getLatestBatch /api/dashboard:", err);
+      console.error("DB error getLatestBatch GET /api/dashboard:", err);
       return res.status(500).json({ message: "DB error" });
     }
 
-    // Không có dữ liệu -> offline
     if (!row) {
       return res.status(200).json({
         batchId: "-",
-        steelBallType: "-", // ✅ thêm
+        steelBallType: "-",
         machineStatus: "offline",
-
-        // Realtime sensor snapshot (no totals)
         steelBallWeight: 0,
-
         voltage: { powerSupply: 0 },
         rpm: { impeller1: 0, impeller2: 0 },
         current: {
@@ -132,12 +132,10 @@ router.get("/", (req, res) => {
           impeller2: 0,
           dustCollector: 0,
         },
-
         abnormalFields: [],
       });
     }
 
-    // ✅ Lấy steel ball type từ DB (fallback nếu DB chưa có cột/giá trị)
     const steelBallType =
       (row.steel_ball_type && String(row.steel_ball_type).trim()) || "Type A";
 
@@ -147,12 +145,11 @@ router.get("/", (req, res) => {
         return res.status(500).json({ message: "DB error" });
       }
 
-      // ===== Check thresholds + create alarms if needed =====
       const abnormalFields = [];
 
       const checkRange = (key, value) => {
         const limit = limits[key];
-        if (!limit) return; // chưa config thì bỏ qua
+        if (!limit) return;
         if (value == null) return;
 
         if (value > limit.upper || value < limit.lower) {
@@ -161,23 +158,19 @@ router.get("/", (req, res) => {
         }
       };
 
-      // Realtime steel ball sensor value:
-      // ưu tiên steel_ball_level_kg (case A - load cell), fallback steel_ball_kg nếu DB cũ
-      const steelBallRealtime = row.steel_ball_level_kg ?? row.steel_ball_kg ?? null;
+      const steelBallRealtime =
+        row.steel_ball_level_kg ?? row.steel_ball_kg ?? null;
 
-      // Map param_key trong alarm_settings với cột trong batches
       checkRange("steel_ball_weight", steelBallRealtime);
       checkRange("current_ps", row.current_ps);
       checkRange("voltage_ps", row.voltage_ps);
       checkRange("power_ps", row.power_ps);
 
-      // Trạng thái gốc: operating, abnormal sẽ do FE suy ra từ bảng alarms
       const machineStatusBase = "operating";
 
-      // ===== Response snapshot only (NO steelBallTotal) =====
       const data = {
         batchId: row.batch_code,
-        steelBallType, // ✅ thêm
+        steelBallType,
         machineStatus: machineStatusBase,
         abnormalFields,
 

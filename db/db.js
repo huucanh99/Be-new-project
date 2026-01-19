@@ -1,16 +1,20 @@
-// db/db.js
+// db.js
+// Runtime DB initializer: creates tables/views/triggers/indexes when BE starts.
+// - Import this file in your server entry and call initDb() once.
+// - Keep this file schema-only (no dev reset). Seed data should be done by seed.js.
+
 const sqlite3 = require("sqlite3").verbose();
 const path = require("path");
 
 const dbPath = path.join(__dirname, "database.sqlite");
 const db = new sqlite3.Database(dbPath);
 
-/**
- * Initializes database schema and seeds required runtime tables.
- */
 function initDb() {
-  console.log("SQLite DB connected. Initializing tables...");
+  console.log("✅ SQLite DB connected. Initializing schema...");
 
+  // ===================== TABLES =====================
+
+  // Alarm threshold settings
   const createAlarmSettings = `
     CREATE TABLE IF NOT EXISTS alarm_settings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -23,6 +27,7 @@ function initDb() {
     );
   `;
 
+  // Component life tracking
   const createComponentLife = `
     CREATE TABLE IF NOT EXISTS component_life (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,6 +38,7 @@ function initDb() {
     );
   `;
 
+  // Alarm history
   const createAlarms = `
     CREATE TABLE IF NOT EXISTS alarms (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,6 +50,7 @@ function initDb() {
     );
   `;
 
+  // Tick state (for time compensation)
   const createTickState = `
     CREATE TABLE IF NOT EXISTS tick_state (
       key TEXT PRIMARY KEY,
@@ -51,71 +58,212 @@ function initDb() {
     );
   `;
 
+  // Raw time-series table (append-only)
+  const createBatchesRaw = `
+    CREATE TABLE IF NOT EXISTS batches_raw (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      batch_code TEXT NOT NULL,
+      date TEXT NOT NULL,
+      time TEXT NOT NULL,
+      shift INTEGER NOT NULL,
+
+      steel_ball_type TEXT,
+
+      power_kw REAL,
+      steel_ball_kg REAL,
+
+      voltage_ps REAL,
+      impeller1_rpm REAL,
+      impeller2_rpm REAL,
+
+      current_ps REAL,
+      current_impeller1 REAL,
+      current_impeller2 REAL,
+      current_dust REAL,
+
+      current_main REAL,
+
+      power_ps REAL,
+      power_impeller1_kw REAL,
+      power_impeller2_kw REAL,
+      power_dust_kw REAL
+    );
+  `;
+
+  // Steel type settings
+  const createSteelTypeSettings = `
+    CREATE TABLE IF NOT EXISTS steel_type_settings (
+      steel_ball_type TEXT PRIMARY KEY,
+      carbon_coefficient REAL NOT NULL,
+      carbon_unit TEXT DEFAULT 'kgCO2/kWh',
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+  `;
+
+  // Users (login + role)
+  const createUsers = `
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      role TEXT CHECK(role IN ('admin','customer')) NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+  `;
+
+  // ===================== OPTION B (AUDIT SAFE) =====================
+
+  // Logical delete (tombstone) for batches_raw
+  const createBatchesTombstone = `
+    CREATE TABLE IF NOT EXISTS batches_tombstone (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      raw_id INTEGER NOT NULL,
+      deleted_at TEXT NOT NULL DEFAULT (datetime('now')),
+      deleted_by INTEGER,
+      reason TEXT,
+      UNIQUE(raw_id)
+    );
+  `;
+
+  // Override log (nullable columns; last record wins)
+  const createBatchesOverride = `
+    CREATE TABLE IF NOT EXISTS batches_override (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      raw_id INTEGER NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_by INTEGER,
+      reason TEXT,
+
+      steel_ball_type TEXT,
+
+      power_kw REAL,
+      steel_ball_kg REAL,
+
+      voltage_ps REAL,
+      impeller1_rpm REAL,
+      impeller2_rpm REAL,
+
+      current_ps REAL,
+      current_impeller1 REAL,
+      current_impeller2 REAL,
+      current_dust REAL,
+
+      current_main REAL,
+
+      power_ps REAL,
+      power_impeller1_kw REAL,
+      power_impeller2_kw REAL,
+      power_dust_kw REAL
+    );
+  `;
+
+  // Effective view (raw minus tombstone, plus latest override)
+  const createBatchesEffectiveView = `
+    CREATE VIEW IF NOT EXISTS batches_effective AS
+    WITH last_override AS (
+      SELECT raw_id, MAX(id) AS max_id
+      FROM batches_override
+      GROUP BY raw_id
+    )
+    SELECT
+      r.id,
+      r.batch_code,
+      r.date,
+      r.time,
+      r.shift,
+
+      COALESCE(o.steel_ball_type, r.steel_ball_type) AS steel_ball_type,
+
+      COALESCE(o.power_kw, r.power_kw) AS power_kw,
+      COALESCE(o.steel_ball_kg, r.steel_ball_kg) AS steel_ball_kg,
+
+      COALESCE(o.voltage_ps, r.voltage_ps) AS voltage_ps,
+      COALESCE(o.impeller1_rpm, r.impeller1_rpm) AS impeller1_rpm,
+      COALESCE(o.impeller2_rpm, r.impeller2_rpm) AS impeller2_rpm,
+
+      COALESCE(o.current_ps, r.current_ps) AS current_ps,
+      COALESCE(o.current_impeller1, r.current_impeller1) AS current_impeller1,
+      COALESCE(o.current_impeller2, r.current_impeller2) AS current_impeller2,
+      COALESCE(o.current_dust, r.current_dust) AS current_dust,
+
+      COALESCE(o.current_main, r.current_main) AS current_main,
+
+      COALESCE(o.power_ps, r.power_ps) AS power_ps,
+      COALESCE(o.power_impeller1_kw, r.power_impeller1_kw) AS power_impeller1_kw,
+      COALESCE(o.power_impeller2_kw, r.power_impeller2_kw) AS power_impeller2_kw,
+      COALESCE(o.power_dust_kw, r.power_dust_kw) AS power_dust_kw
+    FROM batches_raw r
+    LEFT JOIN batches_tombstone t
+      ON t.raw_id = r.id
+    LEFT JOIN last_override lo
+      ON lo.raw_id = r.id
+    LEFT JOIN batches_override o
+      ON o.raw_id = r.id AND o.id = lo.max_id
+    WHERE t.raw_id IS NULL;
+  `;
+
+  // Guard rails: prevent UPDATE/DELETE on raw
+  const createNoDeleteTrigger = `
+    CREATE TRIGGER IF NOT EXISTS trg_batches_raw_no_delete
+    BEFORE DELETE ON batches_raw
+    BEGIN
+      SELECT RAISE(ABORT, 'DELETE is not allowed on batches_raw');
+    END;
+  `;
+
+  const createNoUpdateTrigger = `
+    CREATE TRIGGER IF NOT EXISTS trg_batches_raw_no_update
+    BEFORE UPDATE ON batches_raw
+    BEGIN
+      SELECT RAISE(ABORT, 'UPDATE is not allowed on batches_raw');
+    END;
+  `;
+
+  // ===================== INDEXES =====================
+  const createIndexes = [
+    `CREATE INDEX IF NOT EXISTS idx_batches_raw_date_time ON batches_raw(date, time);`,
+    `CREATE INDEX IF NOT EXISTS idx_batches_raw_batch_code ON batches_raw(batch_code);`,
+    `CREATE INDEX IF NOT EXISTS idx_batches_tombstone_raw_id ON batches_tombstone(raw_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_batches_override_raw_id ON batches_override(raw_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_alarms_start_time ON alarms(start_time);`,
+  ];
+
   db.serialize(() => {
-    db.run(createAlarmSettings, (err) => {
-      if (err) console.error("Failed to create alarm_settings:", err);
-      else console.log("alarm_settings table ready.");
-    });
+    // Create tables
+    db.run(createAlarmSettings);
+    db.run(createComponentLife);
+    db.run(createAlarms);
+    db.run(createTickState);
 
-    db.run(createComponentLife, (err) => {
-      if (err) console.error("Failed to create component_life:", err);
-      else console.log("component_life table ready.");
-    });
+    db.run(createBatchesRaw);
+    db.run(createSteelTypeSettings);
+    db.run(createUsers);
 
-    db.run(createAlarms, (err) => {
-      if (err) console.error("Failed to create alarms:", err);
-      else console.log("alarms table ready.");
-    });
+    // Option B tables
+    db.run(createBatchesTombstone);
+    db.run(createBatchesOverride);
 
-    db.run(createTickState, (err) => {
-      if (err) console.error("Failed to create tick_state:", err);
-      else console.log("tick_state table ready.");
-    });
+    // View + triggers (after tables exist)
+    db.run(createBatchesEffectiveView);
+    db.run(createNoDeleteTrigger);
+    db.run(createNoUpdateTrigger);
 
+    // Indexes
+    createIndexes.forEach((q) => db.run(q));
+
+    // Minimal operational seed: tick_state baseline
     const seedTickState = `
       INSERT OR IGNORE INTO tick_state(key, last_tick_at)
       VALUES ('component_life', strftime('%s','now') * 1000)
     `;
+    db.run(seedTickState);
 
-    db.run(seedTickState, (err) => {
-      if (err) console.error("Failed to seed tick_state:", err);
-      else console.log("tick_state seeded (component_life).");
-    });
-
-    const checkSeed = `SELECT COUNT(*) AS cnt FROM component_life`;
-    db.get(checkSeed, [], (err, row) => {
-      if (err) {
-        console.error("Failed to check component_life:", err);
-        return;
-      }
-
-      if (row.cnt === 0) {
-        console.log("Seeding component_life table...");
-
-        const insertSql = `
-          INSERT INTO component_life (component_name, accumulated_hours, warning_hours)
-          VALUES 
-            ('impeller1',  0, 1),
-            ('impeller2',  0, 100),
-            ('blade1',     0, 80),
-            ('blade2',     0, 80),
-            ('claw1',      0, 60),
-            ('claw2',      0, 60),
-            ('clawTube1',  0, 60),
-            ('clawTube2',  0, 60),
-            ('filter',     0, 50)
-        `;
-
-        db.run(insertSql, (err2) => {
-          if (err2) console.error("Failed to seed component_life:", err2);
-          else console.log("component_life seeded.");
-        });
-      }
-    });
+    console.log("✅ DB schema ready.");
   });
 }
 
 module.exports = {
   db,
   initDb,
+  dbPath,
 };

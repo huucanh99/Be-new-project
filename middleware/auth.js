@@ -6,23 +6,38 @@ const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
  * Middleware that validates JWT access token and attaches user info to request.
  */
 function requireAuth(req, res, next) {
-  const auth = req.headers.authorization || "";
-  const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+  const authHeader = req.headers.authorization || "";
+  const bearerToken = authHeader.startsWith("Bearer ")
+    ? authHeader.slice(7)
+    : null;
+
+  // Optional: allow token via query for debugging
+  const queryToken = req.query?.token;
+
+  const token = bearerToken || queryToken || null;
 
   if (!token) {
-    return res.status(401).json({ message: "Unauthorized" });
+    return res.status(401).json({ message: "Unauthorized: missing token" });
   }
 
   try {
     const payload = jwt.verify(token, JWT_SECRET);
+
     req.user = {
       id: payload.sub,
       username: payload.username,
       role: payload.role,
     };
-    next();
-  } catch {
-    return res.status(401).json({ message: "Unauthorized" });
+
+    return next();
+  } catch (err) {
+    console.error("JWT verify failed:", err.message);
+
+    if (err.name === "TokenExpiredError") {
+      return res.status(401).json({ message: "Token expired" });
+    }
+
+    return res.status(401).json({ message: "Invalid token" });
   }
 }
 
@@ -38,7 +53,7 @@ function requireAdmin(req, res, next) {
     return res.status(403).json({ message: "Admin only" });
   }
 
-  next();
+  return next();
 }
 
 module.exports = {

@@ -1,24 +1,11 @@
 // routes/alarms.js
 const express = require("express");
 const router = express.Router();
-const { db } = require("../db/db");
 
-/**
- * Returns the current timestamp formatted as YYYY-MM-DD HH:mm:ss.
- */
-function nowString() {
-  const now = new Date();
-  const pad = (n) => String(n).padStart(2, "0");
-
-  return (
-    `${now.getFullYear()}-` +
-    `${pad(now.getMonth() + 1)}-` +
-    `${pad(now.getDate())} ` +
-    `${pad(now.getHours())}:` +
-    `${pad(now.getMinutes())}:` +
-    `${pad(now.getSeconds())}`
-  );
-}
+// ✅ ĐỔI import này theo db.js mới của em
+// Nếu db.js mới nằm ở: be-project1/db.js  → dùng "../db"
+// Nếu nằm ở: be-project1/db/db.js         → dùng "../db/db"
+const { db } = require("../db/db"); // <-- sửa đúng path cho dự án của em
 
 /**
  * GET /api/alarms
@@ -29,7 +16,7 @@ router.get("/", (req, res) => {
     SELECT 
       id,
       type,
-      location,
+      COALESCE(location, '') AS location,
       start_time AS start,
       COALESCE(end_time, '') AS end,
       COALESCE(details, '') AS details
@@ -43,8 +30,7 @@ router.get("/", (req, res) => {
       console.error("DB error GET /api/alarms:", err);
       return res.status(500).json({ message: "DB error" });
     }
-
-    res.json(rows);
+    return res.json(rows || []);
   });
 });
 
@@ -53,12 +39,16 @@ router.get("/", (req, res) => {
  * Acknowledges an active alarm by setting its end_time.
  */
 router.post("/ack/:id", (req, res) => {
-  const alarmId = req.params.id;
+  const alarmId = Number(req.params.id);
+  if (!Number.isFinite(alarmId)) {
+    return res.status(400).json({ message: "Invalid alarm id" });
+  }
 
   const sql = `
     UPDATE alarms
     SET end_time = datetime('now')
-    WHERE id = ? AND end_time IS NULL
+    WHERE id = ?
+      AND (end_time IS NULL OR end_time = '')
   `;
 
   db.run(sql, [alarmId], function (err) {
@@ -73,7 +63,7 @@ router.post("/ack/:id", (req, res) => {
         .json({ message: "Alarm not found or already acknowledged" });
     }
 
-    res.json({ ok: true, updated: this.changes });
+    return res.json({ ok: true, updated: this.changes });
   });
 });
 

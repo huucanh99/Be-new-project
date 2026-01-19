@@ -1,7 +1,9 @@
 // routes/dailyReport.js
 const express = require("express");
 const router = express.Router();
-const { db } = require("../db/db");
+
+// ✅ SỬA import theo vị trí db.js mới của em
+const { db } = require("../db/db"); // hoặc "../db/db" tuỳ project
 
 /**
  * Promise wrapper for db.all() to use async/await.
@@ -12,95 +14,84 @@ const dbAll = (sql, params = []) =>
   });
 
 /**
+ * Build time upper bound string from uptoHour.
+ * uptoHour=19 -> "19:59:59"
+ */
+function hourToTimeMax(uptoHour) {
+  const h = Number.parseInt(uptoHour, 10);
+  const hh = Number.isFinite(h) ? Math.max(0, Math.min(23, h)) : 23;
+  return String(hh).padStart(2, "0") + ":59:59";
+}
+
+/**
  * GET /api/daily-report
- * Builds daily/shift/batch reports from the batches table and returns aggregated data for charts.
+ * Builds daily/shift/batch reports from batches_effective (VIEW)
+ * Query params:
+ * - date=YYYY-MM-DD (required)
+ * - uptoHour=0..23 (optional)
+ * - reportType: "Daily Total Report" | "Shift Report" | "Batch Summary"
+ * - batchId (optional for Batch Summary)
+ * - shift (optional for Shift Report): 1|2|3
  */
 router.get("/", async (req, res) => {
   const { date, uptoHour, reportType, batchId, shift } = req.query;
 
   if (!date) return res.status(400).json({ message: "date is required" });
 
-  const hourLimit = uptoHour ? parseInt(uptoHour, 10) : 23;
+  const timeMax = hourToTimeMax(uptoHour);
 
   try {
-    const cols = await dbAll(`PRAGMA table_info(batches)`);
-    const colSet = new Set((cols || []).map((c) => c.name));
-
-    const typeCandidates = [
-      "steel_ball_type",
-      "steelBallType",
-      "steel_type",
-      "steelType",
-      "type",
-    ];
-
-    const typeCol = typeCandidates.find((c) => colSet.has(c)) || null;
-
+    // ✅ Batch list for UI dropdown
     const batchSql = `
       SELECT DISTINCT batch_code
-      FROM batches
+      FROM batches_effective
       WHERE date = ?
       ORDER BY batch_code ASC
     `;
     const batchRows = await dbAll(batchSql, [date]);
     const batchIds = (batchRows || []).map((r) => r.batch_code);
 
-    let whereClause = "";
-    let params = [];
+    // ✅ Build where clause
+    let whereClause = `WHERE date = ?`;
+    const params = [date];
 
     if (reportType === "Shift Report" && shift) {
-      whereClause = `WHERE date = ?`;
-      params = [date];
-
-      if (shift == 1) {
-        whereClause += `
-          AND (
-            CAST(substr(time,1,2) AS INTEGER) >= 22
-            OR CAST(substr(time,1,2) AS INTEGER) < 6
-          )
-        `;
-      } else if (shift == 2) {
-        whereClause += `
-          AND CAST(substr(time,1,2) AS INTEGER) >= 6
-          AND CAST(substr(time,1,2) AS INTEGER) < 14
-        `;
-      } else if (shift == 3) {
-        whereClause += `
-          AND CAST(substr(time,1,2) AS INTEGER) >= 14
-          AND CAST(substr(time,1,2) AS INTEGER) < 22
-        `;
-      }
+      // Schema mới có cột shift => lọc trực tiếp
+      whereClause += ` AND shift = ?`;
+      params.push(Number(shift));
     } else if (reportType === "Batch Summary") {
-      whereClause = `WHERE date = ?`;
-      params = [date];
-
       if (batchId) {
         whereClause += ` AND batch_code = ?`;
         params.push(batchId);
       }
+      // (Batch summary không lọc uptoHour theo code cũ — giữ giống cũ)
     } else {
-      whereClause = `
-        WHERE date = ?
-          AND CAST(substr(time,1,2) AS INTEGER) <= ?
-      `;
-      params = [date, hourLimit];
+      // Daily Total Report / default: lọc tới giờ
+      whereClause += ` AND time <= ?`;
+      params.push(timeMax);
     }
 
-    const typeSelect = typeCol ? `, ${typeCol} AS steel_ball_type` : ``;
-
+    // ✅ Load data
     const dataSql = `
-      SELECT batch_code, date, time, power_kw${typeSelect}
-      FROM batches
+      SELECT
+        batch_code,
+        date,
+        time,
+        shift,
+        steel_ball_type,
+        power_kw
+      FROM batches_effective
       ${whereClause}
-      ORDER BY batch_code ASC, time ASC
+      ORDER BY batch_code ASC, time ASC, id ASC
     `;
 
     const rows = await dbAll(dataSql, params);
 
+    // Empty response (giữ format như cũ)
     if (!rows || rows.length === 0) {
       return res.json({
         date,
-        uptoHour: hourLimit,
+        uptoHour: Number.parseInt(uptoHour ?? "23", 10) || 23,
         reportType,
         steelBallType: null,
         powerBatches: [],
@@ -121,13 +112,15 @@ router.get("/", async (req, res) => {
     let steelLineData = [];
     const alarmRows = [];
 
+    // ✅ DAILY TOTAL REPORT: sum power_kw per batch
     if (reportType === "Daily Total Report") {
       const batchAgg = {};
 
       rows.forEach((r) => {
         const p = Number(r.power_kw) || 0;
-        if (!batchAgg[r.batch_code]) batchAgg[r.batch_code] = { total: 0 };
-        batchAgg[r.batch_code].total += p;
+        const b = r.batch_code || "UNKNOWN";
+        if (!batchAgg[b]) batchAgg[b] = { total: 0 };
+        batchAgg[b].total += p;
       });
 
       powerBatches = Object.keys(batchAgg).map((batch) => ({
@@ -135,6 +128,7 @@ router.get("/", async (req, res) => {
         value: batchAgg[batch].total,
       }));
 
+      // giữ logic cũ: steel = power * 0.8
       steelBatches = powerBatches.map((b) => ({
         batch: b.batch,
         value: b.value * 0.8,
@@ -142,7 +136,7 @@ router.get("/", async (req, res) => {
 
       return res.json({
         date,
-        uptoHour: hourLimit,
+        uptoHour: Number.parseInt(uptoHour ?? "23", 10) || 23,
         reportType,
         steelBallType,
         powerBatches,
@@ -154,6 +148,7 @@ router.get("/", async (req, res) => {
       });
     }
 
+    // ✅ BATCH SUMMARY: time series of power_kw for the batch
     if (reportType === "Batch Summary") {
       powerTimeData = rows.map((r) => ({
         time: r.time,
@@ -167,7 +162,7 @@ router.get("/", async (req, res) => {
 
       return res.json({
         date,
-        uptoHour: hourLimit,
+        uptoHour: Number.parseInt(uptoHour ?? "23", 10) || 23,
         reportType,
         steelBallType,
         powerBatches: [],
@@ -179,13 +174,15 @@ router.get("/", async (req, res) => {
       });
     }
 
+    // ✅ SHIFT REPORT: sum power_kw per batch in that shift
     if (reportType === "Shift Report") {
       const batchAgg = {};
 
       rows.forEach((r) => {
         const p = Number(r.power_kw) || 0;
-        if (!batchAgg[r.batch_code]) batchAgg[r.batch_code] = { total: 0 };
-        batchAgg[r.batch_code].total += p;
+        const b = r.batch_code || "UNKNOWN";
+        if (!batchAgg[b]) batchAgg[b] = { total: 0 };
+        batchAgg[b].total += p;
       });
 
       powerBatches = Object.keys(batchAgg).map((batch) => ({
@@ -200,7 +197,7 @@ router.get("/", async (req, res) => {
 
       return res.json({
         date,
-        uptoHour: hourLimit,
+        uptoHour: Number.parseInt(uptoHour ?? "23", 10) || 23,
         reportType,
         steelBallType,
         powerBatches,
@@ -212,9 +209,10 @@ router.get("/", async (req, res) => {
       });
     }
 
+    // default fallback
     return res.json({
       date,
-      uptoHour: hourLimit,
+      uptoHour: Number.parseInt(uptoHour ?? "23", 10) || 23,
       reportType,
       steelBallType,
       powerBatches: [],

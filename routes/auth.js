@@ -2,6 +2,10 @@ const express = require("express");
 const router = express.Router();
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
+
+// ✅ SỬA import theo vị trí db.js mới của em
+// - Nếu db.js mới ở be/db.js           => "../db"
+// - Nếu db.js mới ở be/db/db.js        => "../db/db"
 const { db } = require("../db/db");
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
@@ -22,6 +26,7 @@ router.post("/login", (req, res) => {
     [username],
     async (err, user) => {
       if (err) {
+        console.error("DB error POST /api/auth/login:", err);
         return res.status(500).json({ message: "DB error" });
       }
 
@@ -29,25 +34,30 @@ router.post("/login", (req, res) => {
         return res.status(401).json({ message: "Invalid credentials" });
       }
 
-      const ok = await bcrypt.compare(password, user.password_hash);
-      if (!ok) {
-        return res.status(401).json({ message: "Invalid credentials" });
+      try {
+        const ok = await bcrypt.compare(password, user.password_hash);
+        if (!ok) {
+          return res.status(401).json({ message: "Invalid credentials" });
+        }
+
+        const token = jwt.sign(
+          { sub: user.id, username: user.username, role: user.role },
+          JWT_SECRET,
+          { expiresIn: "2h" }
+        );
+
+        return res.json({
+          token,
+          user: {
+            id: user.id,
+            username: user.username,
+            role: user.role,
+          },
+        });
+      } catch (e) {
+        console.error("Auth error POST /api/auth/login:", e);
+        return res.status(500).json({ message: "Auth error" });
       }
-
-      const token = jwt.sign(
-        { sub: user.id, username: user.username, role: user.role },
-        JWT_SECRET,
-        { expiresIn: "2h" }
-      );
-
-      return res.json({
-        token,
-        user: {
-          id: user.id,
-          username: user.username,
-          role: user.role,
-        },
-      });
     }
   );
 });

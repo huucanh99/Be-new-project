@@ -1,12 +1,9 @@
 // routes/historical.js
 const express = require("express");
-const sqlite3 = require("sqlite3").verbose();
-const path = require("path");
-
 const router = express.Router();
 
-const dbPath = path.resolve(__dirname, "../db/database.sqlite");
-const db = new sqlite3.Database(dbPath);
+// ✅ Dùng chung db (đúng path + đã init schema)
+const { db } = require("../db/db"); // hoặc "../db/db" tuỳ project
 
 const MINUTES_PER_RECORD = 2;
 
@@ -17,7 +14,7 @@ function runQuery(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.all(sql, params, (err, rows) => {
       if (err) return reject(err);
-      resolve(rows);
+      resolve(rows || []);
     });
   });
 }
@@ -26,7 +23,7 @@ function runQuery(sql, params = []) {
  * Expands the requested from/to range into an actual date range (YYYY-MM-DD) based on report type.
  */
 function expandRange(reportType, from, to) {
-  const type = reportType.toLowerCase();
+  const type = String(reportType || "daily").toLowerCase();
 
   if (type === "daily") {
     return { startDate: from, endDate: to };
@@ -37,7 +34,6 @@ function expandRange(reportType, from, to) {
     const [ty, tm] = to.split("-").map(Number);
 
     const startDate = `${fy}-${String(fm).padStart(2, "0")}-01`;
-
     const lastDay = new Date(ty, tm, 0).getDate();
     const endDate = `${ty}-${String(tm).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
 
@@ -60,6 +56,10 @@ function expandRange(reportType, from, to) {
 /**
  * GET /api/historical-report
  * Returns summary totals and time series data for daily/monthly/yearly historical charts.
+ *
+ * Query:
+ * - reportType: daily|monthly|yearly
+ * - from, to (required)
  */
 router.get("/", async (req, res) => {
   try {
@@ -71,7 +71,7 @@ router.get("/", async (req, res) => {
       });
     }
 
-    const type = reportType.toLowerCase();
+    const type = String(reportType).toLowerCase();
     if (!["daily", "monthly", "yearly"].includes(type)) {
       return res.status(400).json({
         error: "reportType must be 'daily', 'monthly', or 'yearly'",
@@ -80,12 +80,13 @@ router.get("/", async (req, res) => {
 
     const { startDate, endDate } = expandRange(type, from, to);
 
+    // ✅ Use batches_effective view
     const summarySql = `
       SELECT 
-        SUM(power_kw)      AS total_power_kw,
-        SUM(steel_ball_kg) AS total_steel_ball,
-        COUNT(*)           AS record_count
-      FROM batches
+        SUM(COALESCE(power_kw, 0))      AS total_power_kw,
+        SUM(COALESCE(steel_ball_kg, 0)) AS total_steel_ball,
+        COUNT(*)                        AS record_count
+      FROM batches_effective
       WHERE date BETWEEN ? AND ?
     `;
     const summaryRows = await runQuery(summarySql, [startDate, endDate]);
@@ -99,8 +100,8 @@ router.get("/", async (req, res) => {
     const totalHours = totalMinutes / 60;
 
     const summary = {
-      totalPowerKw: Number((summaryRow.total_power_kw || 0).toFixed(2)),
-      totalSteelBallKg: Number((summaryRow.total_steel_ball || 0).toFixed(2)),
+      totalPowerKw: Number((Number(summaryRow.total_power_kw || 0)).toFixed(2)),
+      totalSteelBallKg: Number((Number(summaryRow.total_steel_ball || 0)).toFixed(2)),
       totalTimeHours: Number(totalHours.toFixed(2)),
       recordCount: summaryRow.record_count || 0,
     };
@@ -115,9 +116,9 @@ router.get("/", async (req, res) => {
           time,
           current_main,
           steel_ball_kg
-        FROM batches
+        FROM batches_effective
         WHERE date BETWEEN ? AND ?
-        ORDER BY date ASC, time ASC
+        ORDER BY date ASC, time ASC, id ASC
       `;
       const rows = await runQuery(sql, [startDate, endDate]);
 
@@ -136,9 +137,9 @@ router.get("/", async (req, res) => {
       const sql = `
         SELECT
           substr(date, 1, 7) AS month,
-          AVG(current_main)  AS avg_current,
-          SUM(steel_ball_kg) AS total_steel_ball
-        FROM batches
+          AVG(COALESCE(current_main, 0))  AS avg_current,
+          SUM(COALESCE(steel_ball_kg, 0)) AS total_steel_ball
+        FROM batches_effective
         WHERE date BETWEEN ? AND ?
         GROUP BY month
         ORDER BY month ASC
@@ -147,12 +148,12 @@ router.get("/", async (req, res) => {
 
       seriesCurrent = rows.map((r) => ({
         x: r.month,
-        y: Number((r.avg_current || 0).toFixed(3)),
+        y: Number((Number(r.avg_current || 0)).toFixed(3)),
       }));
 
       seriesSteelBall = rows.map((r) => ({
         x: r.month,
-        y: Number((r.total_steel_ball || 0).toFixed(2)),
+        y: Number((Number(r.total_steel_ball || 0)).toFixed(2)),
       }));
     }
 
@@ -160,9 +161,9 @@ router.get("/", async (req, res) => {
       const sql = `
         SELECT
           substr(date, 1, 4) AS year,
-          AVG(current_main)  AS avg_current,
-          SUM(steel_ball_kg) AS total_steel_ball
-        FROM batches
+          AVG(COALESCE(current_main, 0))  AS avg_current,
+          SUM(COALESCE(steel_ball_kg, 0)) AS total_steel_ball
+        FROM batches_effective
         WHERE date BETWEEN ? AND ?
         GROUP BY year
         ORDER BY year ASC
@@ -171,16 +172,16 @@ router.get("/", async (req, res) => {
 
       seriesCurrent = rows.map((r) => ({
         x: r.year,
-        y: Number((r.avg_current || 0).toFixed(3)),
+        y: Number((Number(r.avg_current || 0)).toFixed(3)),
       }));
 
       seriesSteelBall = rows.map((r) => ({
         x: r.year,
-        y: Number((r.total_steel_ball || 0).toFixed(2)),
+        y: Number((Number(r.total_steel_ball || 0)).toFixed(2)),
       }));
     }
 
-    res.json({
+    return res.json({
       reportType: type,
       rawRange: { from, to },
       dateRange: { startDate, endDate },
@@ -190,7 +191,7 @@ router.get("/", async (req, res) => {
     });
   } catch (err) {
     console.error("Error GET /api/historical-report:", err);
-    res.status(500).json({ error: "Internal Server Error" });
+    return res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
